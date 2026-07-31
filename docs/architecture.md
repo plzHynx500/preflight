@@ -34,7 +34,7 @@ Preflight는 환경 설치 단계와 학습 실행 단계 사이에 놓이는 �
 | 언어 | Python 3.9+ | 사용자의 실제 PyTorch/CUDA 환경을 그 자리에서 불러와 검사해야 하므로 사실상 유일한 선택지 |
 | CLI 프레임워크 | Typer | 타입 힌트 기반으로 명령어를 간결하게 정의, `--help` 자동 생성 |
 | 출력 포맷팅 | rich | 터미널에 색상·기호(✔/⚠/✖)를 안정적으로 렌더링 |
-| GPU 상태 조회 | pynvml | nvidia-smi가 쓰는 NVML C 라이브러리의 Python 바인딩 |
+| GPU 상태 조회 | nvidia-ml-py | nvidia-smi가 쓰는 NVML C 라이브러리의 Python 바인딩. 코드에서 쓰는 모듈 이름은 `pynvml` 그대로다 — 같은 이름의 `pynvml` 배포판은 이제 경고만 띄우는 리다이렉터라 쓰지 않는다 |
 | 학습 스택 연동 | 동일 인터프리터 내 import | 사용자 venv에 이미 설치된 torch/transformers/peft/bitsandbytes를 그대로 검증에 사용 |
 | 프로세스 격리 | subprocess / multiprocessing | canary의 import·OOM 크래시가 메인 CLI를 죽이지 않도록 격리 ([ADR-0002](adr/0002-subprocess-isolation-for-canary.md)) |
 | 정밀 타이밍 | torch.cuda.Event | wall-clock 대신 GPU 커널 실행 시간을 정확히 측정 |
