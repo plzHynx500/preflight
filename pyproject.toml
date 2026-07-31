@@ -38,3 +38,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# docs/의 예제 코드블록은 Notion 원본 서식을 그대로 보존한다(정렬된 인라인 주석 등) —
+# ruff format이 기본으로 .md 안의 ```python 블록까지 재포맷하려 들어서 실제 코드와
+# 무관하게 포맷 체크가 항상 실패하는 걸 실측으로 확인해 제외했다.
+extend-exclude = ["docs/**"]

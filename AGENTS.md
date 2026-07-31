@@ -208,27 +208,35 @@ Closes #12
 
 PR 전: 포맷·린트·테스트를 실행했는가 / Issue 완료 조건 체크박스를 갱신했는가 / 본문에 `Closes #번호`를 넣었는가 / 변경 내용과 테스트 결과를 적었는가 / 계약이 바뀌면 docs를 같은 PR에서 갱신했는가 / 제품 범위가 바뀌면 Notion 원본도 갱신했는가.
 
-## AI 에이전트 스킬 — 규약은 있지만 아직 repo에 파일로 없음
+## AI 에이전트 스킬
 
-반복 프롬프트는 프로젝트 스킬(`SKILL.md`를 포함한 폴더)로 만든다. TEAM_WORKFLOW.md가 규정한 스킬은 다음 셋이다.
+반복 프롬프트는 프로젝트 스킬(`SKILL.md`를 포함한 폴더)로 만든다. TEAM_WORKFLOW.md가 규정한 스킬 셋을 `.agents/skills/`에 파일로 만들어뒀다.
 
 - `.agents/skills/plan-feature/SKILL.md` — 기획 문서를 구현 가능한 GitHub Issue 단위로 분해하고, 승인 전에는 계획 초안만 제시한다.
 - `.agents/skills/implement-issue/SKILL.md` — Issue 분석 → 계획 보고 → 승인 후 구현·검증·커밋·Push·PR 생성까지 수행한다.
 - `.agents/skills/propose-change/SKILL.md` — 구현 중 요구사항 충돌·위험·범위 변경을 발견했을 때 변경안을 작성한다.
 
-이 파일들은 아직 만들어져 있지 않다. 그 전까지는 위 규칙(핵심 행동 규칙 + 자동 완료 정책)을 직접 따른다.
+**주의** — 이 경로는 TEAM_WORKFLOW.md(Antigravity CLI 기준) 원본 표기를 그대로 따른 것이다. Claude Code가 이 폴더를 자체 슬래시 커맨드로 자동 인식하는지는 확인되지 않았다 — 세션 시작 시 노출되는 스킬 목록에 아직 나타나지 않는다. 안 되면 사람이나 에이전트가 파일 내용을 직접 참고해서 그 절차를 따르면 되고, 자동 인식 여부와 무관하게 문서로서는 유효하다.
 
-## 자동화 누락 방지 구조 — 일부 미구축
+## 자동화 누락 방지 구조
 
 AGENTS.md만으로는 부족하다. 긴 구현·디버깅이 이어지면 마무리 절차가 빠질 수 있으므로 네 계층을 함께 쓴다.
 
 | 계층 | 역할 | 현재 상태 |
 |---|---|---|
 | `AGENTS.md` | 팀 규칙과 안전 경계 | 있음 (이 문서) |
-| `.agents/skills/` | 작업별 순서와 체크리스트 | 없음 |
-| `.agents/hooks.json` + `scripts/verify-before-pr.sh`(`.ps1`) | 포맷·린트·테스트·민감 파일 검사의 기계적 강제 | 없음 |
-| `.github/workflows/ci.yml` + branch protection | 병합 전 최종 안전망 | 없음 |
+| `.agents/skills/` | 작업별 순서와 체크리스트 | 있음 (위 참고) |
+| `.agents/hooks.json` + `scripts/verify-before-pr.sh`(`.ps1`) | 포맷·린트·테스트·민감 파일 검사의 기계적 강제 | 있음 — 단 `.agents/hooks.json`은 Antigravity CLI 전용 형식이라 Claude Code에서는 아무 효과가 없다(Claude Code는 `.claude/settings.json`에 별도 hooks 스키마를 쓰며, 이 repo엔 아직 없다). Claude Code 세션에서는 `implement-issue` 스킬의 검증 단계나 `scripts/verify-before-pr.*`을 직접 호출하는 것으로 대체한다 |
+| `.github/workflows/ci.yml` + branch protection | 병합 전 최종 안전망 | CI 워크플로만 있음. branch protection은 아직 켜지 않았다(아래 참고) |
 
-`verify-before-pr`는 포맷 검사 → 린트 → 테스트 → 민감 파일(`.env`, credentials, secret) 검사 순으로 실행하고 하나라도 실패하면 PR 생성을 막는 스크립트다. Hook은 편의 장치이지 CI를 대체하는 최종 안전망이 아니며, 불안정하면 Hook을 끄고 스킬 + CI로 돌아간다.
+`verify-before-pr`는 포맷 검사 → 린트 → 테스트 → 민감 파일(`.env`, credentials, secret) 검사 순으로 실행한다. **현재는 pytest 단계만 예외적으로 비차단이다** — `tests/`에 구현 전 골격 스텁(`raise NotImplementedError`)이 남아 있어, 지금 무조건 차단으로 두면 문서만 고치는 PR까지 100% 막혀 검증 자체가 무력화되기 때문이다(포맷·린트·민감 파일 검사는 지금도 예외 없이 차단). `--strict-tests`(`-StrictTests`, 또는 `PREFLIGHT_STRICT_TESTS=1`)로 즉시 강제할 수 있고, 첫 구현 Issue가 머지되어 스텁이 사라지면 이 예외를 없애고 기본값을 strict로 되돌린다. `.github/workflows/ci.yml`의 Test 스텝도 같은 이유로 `continue-on-error: true`다 — 포맷·린트는 CI에서도 지금부터 실효 있는 차단 조건이다.
 
-그 밖에 TEAM_WORKFLOW.md가 규정했지만 이 repo에 아직 없는 인프라: GitHub CLI(`gh`) 설치·로그인(필요 시 `gh auth refresh -s project`), "Preflight MVP" GitHub Project와 Auto-add 워크플로우, `.github/ISSUE_TEMPLATE/`(feature/bug/improvement), `.github/pull_request_template.md`, `GEMINI.md`. 도입 순서는 (1) gh·Project·템플릿·CI 기반 → (2) implement-issue 스킬과 verify-before-pr → (3) Notion MCP 읽기 흐름 → (4) Hook → (5) 무인 Notion 자동화 순이다. 이 파일들을 만드는 작업은 별도 Issue로 분리한다.
+Hook은 편의 장치이지 CI를 대체하는 최종 안전망이 아니며, 불안정하면 Hook을 끄고 스킬 + CI로 돌아간다.
+
+### 아직 이 repo에 없는 것 (사람이 해야 함)
+
+- **`main` branch protection** — "PR 필수", "CI 통과 필수" 등. 켜는 순간 3명 전원이 direct push 대신 PR을 거쳐야 하므로, 파일 생성과 달리 팀 워크플로 자체를 바꾸는 결정이라 자동으로 켜지 않았다. 켜더라도 위 pytest 예외 때문에 지금은 포맷·린트만 실질적인 게이트다.
+- **GitHub Project 보드**("Preflight MVP")와 Auto-add 워크플로우 — 생성 안 함.
+- **`gh auth refresh -s project`** — 현재 `gh` 토큰에 `project` 스코프가 없어 Project 관련 CLI 조작이 막혀 있다. 스코프 확장은 토큰 권한 변경이라 자동화 등급 D(사람만 실행)로 분류해 시도하지 않았다. `gh`는 이미 로그인돼 있다(Issue 생성 등에는 지금도 문제없이 쓸 수 있다) — Project 조작에만 추가 스코프가 필요하다.
+
+이 세 가지를 만들지 켤지는 팀 판단이 필요해 별도로 남겨둔다.

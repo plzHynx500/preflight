@@ -6,8 +6,6 @@ docs/architecture.md §5 MODULE-03 참고. --yes가 있을 때만 호출된다
 
 from __future__ import annotations
 
-from preflight.canary.engine import run_canary_check
-
 
 def reverify(model, batch_size: int, seq_len: int) -> dict:
     raise NotImplementedError
