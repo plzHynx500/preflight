@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "preflight-check"
+version = "0.1.0"
+description = "파인튜닝을 시작하기 전, 지금 환경이 실제로 준비됐는지 확인하는 진단 CLI"
+readme = "readme.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "Preflight team" }]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+    "pynvml>=11.5",
+]
+# torch/transformers/peft/bitsandbytes는 의도적으로 하드 의존성에 넣지 않는다 —
+# 사용자 venv에 이미 설치된 버전을 그대로 불러와 검증하는 것이 핵심 설계이므로
+# (docs/architecture.md §2 "학습 스택 연동" 참고), preflight 자신의 설치가 그 환경을
+# 덮어쓰면 안 된다.
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+preflight = "preflight.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/preflight"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]

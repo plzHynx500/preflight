@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Preflight — 현재 작업용 압축 브리프 (AGENTS.md 참고, Git 미추적)
+.agent/
