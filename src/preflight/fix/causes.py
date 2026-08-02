@@ -9,4 +9,49 @@ from __future__ import annotations
 
 
 def classify_cause(check_result: dict) -> str:
-    raise NotImplementedError
+    """Canary check_result 딕셔너리에서 가장 중요한 대표 원인(cause code)을 분류한다.
+
+    우선순위: FAIL (import_crash > oom > 4bit_cpu_fallback) > WARN (memory_delta_high > cpu_multiplier_low)
+    """
+    verdict = check_result.get("verdict")
+    status = check_result.get("status", "ok")
+    reasons = check_result.get("reasons", [])
+    error_log = str(check_result.get("error_log") or "")
+
+    # 1. PASS 처리
+    if verdict == "PASS":
+        return "pass"
+
+    # 2. FAIL - import_crash
+    if status == "import_crash" or "import_crash" in reasons:
+        error_lower = error_log.lower()
+        if "bitsandbytes" in error_lower or "cuda" in error_lower:
+            return "bnb_not_compiled_with_cuda"
+        return "import_crash_general"
+
+    # 3. FAIL - oom
+    if status == "oom" or "oom" in reasons:
+        return "oom"
+
+    # 4. FAIL - 4bit cpu fallback
+    is_cpu_fallback = (
+        "4bit_cpu_fallback" in reasons
+        or "device_cpu" in reasons
+        or (check_result.get("quant_backend") == "bnb-4bit" and check_result.get("device") == "cpu")
+    )
+    if is_cpu_fallback:
+        if check_result.get("compiled_with_cuda") is False:
+            return "bnb_not_compiled_with_cuda"
+        return "4bit_cpu_fallback_other"
+
+    # 5. status == "error"
+    if status == "error":
+        return "unknown_error"
+
+    # 6. WARN 항목
+    if "memory_delta_high" in reasons:
+        return "memory_delta_high"
+    if "cpu_multiplier_low" in reasons:
+        return "cpu_multiplier_low"
+
+    return "unknown"
