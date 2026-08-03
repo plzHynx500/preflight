@@ -8,6 +8,7 @@ from preflight.canary.engine import run_canary_check
 from preflight.canary.judge import judge_result
 from preflight.fix.executor import apply_fix, suggest_fix
 from preflight.report import render_report
+from preflight.reverify import reverify
 
 app = typer.Typer(help="Preflight — 파인튜닝 환경 진단 CLI")
 
@@ -35,10 +36,17 @@ def check(
         if fix:
             check_result["fix"] = fix
 
-    render_report([check_result], json_output=json_output)
-
     if yes and fix:
         apply_fix(fix)
+        reverified = reverify(
+            model=model,
+            batch_size=batch_size or 1,
+            seq_len=seq_len or 8,
+        )
+        check_result["reverified"] = reverified
+        verdict = reverified.get("verdict", "PASS")
+
+    render_report([check_result], json_output=json_output)
 
     if verdict != "PASS":
         raise typer.Exit(code=1)
