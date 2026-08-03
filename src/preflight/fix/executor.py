@@ -2,7 +2,34 @@
 
 from __future__ import annotations
 
+import shlex
+import subprocess
+
 from preflight.fix.causes import classify_cause
+
+
+class FixExecutionError(RuntimeError):
+    """수정 명령어 실행 실패 시 발생한다."""
+
+    def __init__(
+        self,
+        command: str,
+        returncode: int | None,
+        stdout: str,
+        stderr: str,
+        message: str = "",
+    ) -> None:
+        self.command = command
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        msg = message or (
+            f"수정 명령어 실행 실패 ('{command}'): exit code {returncode}\n"
+            f"[stderr] {stderr.strip()}\n"
+            f"[stdout] {stdout.strip()}"
+        )
+        super().__init__(msg)
+
 
 _FIX_MAP: dict[str, dict[str, str | None]] = {
     "bnb_not_compiled_with_cuda": {
@@ -58,5 +85,35 @@ def suggest_fix(check_result: dict) -> dict | None:
 
 
 def apply_fix(fix: dict) -> None:
-    """--yes 지정 시에만 호출된다."""
-    raise NotImplementedError
+    """--yes 지정 시에만 호출된다.
+
+    fix 딕셔너리의 'fix_command'를 실행하며,
+    표준 출력/에러를 캡처하고 실패 시 FixExecutionError를 발생시킨다.
+    """
+    cmd = fix.get("fix_command")
+    if not cmd:
+        return
+
+    args = shlex.split(cmd)
+    try:
+        subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise FixExecutionError(
+            command=cmd,
+            returncode=e.returncode,
+            stdout=e.stdout or "",
+            stderr=e.stderr or "",
+        ) from e
+    except OSError as e:
+        raise FixExecutionError(
+            command=cmd,
+            returncode=None,
+            stdout="",
+            stderr=str(e),
+            message=f"수정 명령어 실행 실패 ('{cmd}'): {e}",
+        ) from e
