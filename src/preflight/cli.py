@@ -13,6 +13,21 @@ from preflight.reverify import reverify
 app = typer.Typer(help="Preflight — 파인튜닝 환경 진단 CLI")
 
 
+def get_exit_code(verdict: str) -> int:
+    """판정 결과(PASS/WARN/FAIL)에 따른 CLI 종료 코드 반환.
+
+    - 0: 모든 항목이 PASS인 경우
+    - 1: FAIL이 하나라도 포함된 경우
+    - 2: FAIL 없이 WARN만 포함된 경우
+    """
+    v = verdict.upper() if verdict else "PASS"
+    if v == "FAIL":
+        return 1
+    if v == "WARN":
+        return 2
+    return 0
+
+
 @app.command()
 def check(
     model: str | None = typer.Option(None, "--model", help="HuggingFace 모델명 또는 config"),
@@ -48,8 +63,9 @@ def check(
 
     render_report([check_result], json_output=json_output)
 
-    if verdict != "PASS":
-        raise typer.Exit(code=1)
+    exit_code = get_exit_code(verdict)
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
 
 
 if __name__ == "__main__":
