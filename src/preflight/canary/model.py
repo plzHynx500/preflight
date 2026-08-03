@@ -25,13 +25,36 @@ QUANT_BACKEND_4BIT = "bnb-4bit"
 QUANT_BACKEND_FALLBACK = "nn-linear-fallback"
 
 
-def build_dummy_model(model_name: str | None):
-    """AutoConfig.from_pretrained() + from_config()로 랜덤 초기화 모델을 구성한다."""
-    raise NotImplementedError
+def build_dummy_model(model_name: str):
+    """`--model` 경로용 랜덤 초기화 모델을 구성한다.
+
+    가중치는 다운로드하지 않는다 — `AutoConfig.from_pretrained()`로 구조(config.json,
+    수 KB)만 조회하고 `from_config()`로 랜덤 초기화한다(docs/architecture.md §5
+    MODULE-01). QLoRA(4bit) 래핑 등 학습 설정 세부 옵션은 MVP에서 고정 플래그가
+    없어 다루지 않는다(docs/architecture.md §3 "학습 설정 세부 옵션").
+
+    `(model, config)`를 함께 돌려준다 — `build_dummy_input()`이 토큰 ID를 만들려면
+    `config.vocab_size`가 필요하기 때문이다(docs/contracts/canary-api.md 참고, 상영님
+    지적 사항).
+    """
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    config = AutoConfig.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_config(config)
+    return model, config
 
 
-def build_dummy_input(batch_size: int, seq_len: int):
-    raise NotImplementedError
+def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int):
+    """`--model` 경로용 더미 입력 — 토큰 ID(정수) 텐서.
+
+    기본 체크(`build_minimal_canary_input`)는 임베딩이 없어 float 텐서를 바로
+    쓰지만, 실제 모델은 임베딩 레이어가 있어 정수 토큰 ID가 필요하고 그 범위는
+    `vocab_size`가 정한다 — 원래 시그니처(batch_size, seq_len)에는 없던 값이라
+    추가했다(docs/contracts/canary-api.md 참고).
+    """
+    import torch
+
+    return torch.randint(0, vocab_size, (batch_size, seq_len))
 
 
 def build_minimal_canary_model(device: str, dtype, prefer_4bit: bool = True):
