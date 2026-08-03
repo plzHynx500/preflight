@@ -34,18 +34,18 @@ VALID_STATUSES = ("ok", "oom", "import_crash", "error")
 WORKER_TIMEOUT_SEC = 600
 
 
-def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> dict:
+def run_canary_check(model: str | None, batch_size: int, seq_len: int) -> dict:
     """canary/worker.py를 subprocess로 격리 실행하고 원시 측정값을 반환한다.
 
     반환 스키마(status/device/memory_delta_mb/elapsed_ms/cpu_multiplier/quant_backend/
     error_log)는 docs/contracts/canary-api.md 참고. 자식이 어떻게 죽든 예외를 던지지
     않고 정규화된 dict를 돌려준다.
 
-    `model_name`이 None이면 기본 체크(모델과 무관한 최소 대표 구조)를 실행한다.
+    `model`이 None이면 기본 체크(모델과 무관한 최소 대표 구조)를 실행한다.
     모델명을 준 경우의 실제 모델 구성은 W4(FR-02)에서 채워진다.
     """
     try:
-        return _run_worker(model_name, batch_size, seq_len)
+        return _run_worker(model, batch_size, seq_len)
     except Exception as exc:  # noqa: BLE001 - 어떤 실패든 진단 결과로 포장해야 한다
         return _normalize({"status": "error", "error_log": f"{type(exc).__name__}: {exc}"})
 
