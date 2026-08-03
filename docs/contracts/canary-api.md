@@ -35,6 +35,29 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 | `model_name`, `batch_size`, `seq_len` (입력) | CLI 진입점 — 모델명(또는 기본 체크면 `None`)만 넘긴다 | 실행·측정 담당(자식 프로세스에서 모델 구성) |
 | `status`/`device`/`memory_delta_mb`/`elapsed_ms`/`cpu_multiplier`/`quant_backend`/`error_log` (출력) | 실행·측정·크래시 캐치까지 전부 담당 | 판정(`judge_result`) → 원인분류(`suggest_fix`) |
 
+## `build_dummy_model` / `build_dummy_input` (canary/model.py, W4 산출물)
+
+`run_canary_check`의 자식 프로세스 안에서만 호출되는 내부 헬퍼다 — 모듈 경계 밖으로
+노출되지 않지만, W9 통합(worker.py의 `--model` 경로 연결) 때 그대로 쓰일 시그니처라
+여기 함께 적는다.
+
+```python
+def build_dummy_model(model_name: str):
+    """가중치 다운로드 없이 config만 조회해 랜덤 초기화 모델을 만든다."""
+    ...
+    return model, config  # config.vocab_size를 build_dummy_input에 넘기기 위해 함께 반환
+
+def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int):
+    """토큰 ID(정수) 텐서. vocab_size가 있어야 유효한 범위의 ID를 만들 수 있다."""
+    ...
+```
+
+`build_dummy_input`은 원래 `(batch_size, seq_len)`만 받는 시그니처로 스텁이 있었으나,
+`--model` 경로의 입력은 정수 토큰 ID라 `vocab_size`(=`build_dummy_model`이 돌려준
+`config.vocab_size`)가 있어야 만들 수 있어 W4 구현 중 `vocab_size` 파라미터를
+추가했다. W9에서 두 함수를 이어 쓸 때는 `build_dummy_model`이 돌려준 `config`에서
+`vocab_size`를 꺼내 `build_dummy_input`에 그대로 넘기면 된다.
+
 ## `judge_result`
 
 원시 측정값에 매직넘버 기준을 비교해 `verdict`와 `reasons`를 얹는다. **원인은 몰라도 된다** — 순수 숫자·상태 비교일 뿐이다.
@@ -52,13 +75,15 @@ def judge_result(raw: dict) -> dict:
 
 | 판정 | 조건 |
 |---|---|
-| FAIL | `status == "oom"` · `status == "import_crash"` · 4bit 레이어 device=cpu 감지 |
+| FAIL | `status == "oom"` · `status == "import_crash"` · `status == "error"` · 4bit 레이어 device=cpu 감지 |
 | WARN | `memory_delta_mb`가 예측 대비 15% 이상 벗어남 · `cpu_multiplier < 2` |
 | PASS | 위 조건에 전부 해당하지 않음 |
 
-FAIL 3개·WARN 2개, 총 5개 판정 항목 전부 MVP 구현으로 팀이 확정했다. 두 숫자(15%, 2배)는 정밀 검증된 값이 아니라 매직넘버로 우선 채택한 것이며, 실측 데이터가 쌓이면 조정한다.
+FAIL 4개·WARN 2개, 총 6개 판정 항목 전부 MVP 구현으로 팀이 확정했다(`status == "error"`는 W5 구현 중 추가). 두 숫자(15%, 2배)는 정밀 검증된 값이 아니라 매직넘버로 우선 채택한 것이며, 실측 데이터가 쌓이면 조정한다.
 
-> "4bit 레이어 device=cpu" 조건은 `quant_backend == "bnb-4bit"`일 때만 판정할 수 있다 — `"nn-linear-fallback"`이면 애초에 4bit 레이어가 없으므로 이 항목은 판정 대상에서 빠지고, 대신 폴백이 발동됐다는 사실이 리포트에 드러나야 한다.
+> "4bit 레이어 device=cpu" 조건은 `quant_backend == "bnb-4bit"`일 때만 판정할 수 있다 — `"nn-linear-fallback"`이면 애초에 4bit 레이어가 없으므로 이 항목은 판정 대상에서 빠지고, 대신 `reasons`에 `"quant_fallback"`이 정보성으로 남아 리포트에 폴백 사실이 드러난다(이 값 자체는 verdict에 영향을 주지 않는다).
+
+> **`memory_delta_mb` 예측 비교는 현재 사실상 대기 상태다.** 15% 이탈 판정은 raw에 `expected_memory_delta_mb`(옵션, 위 7개 필드 스키마에는 없음)가 있을 때만 평가된다. 이 예측값은 probe 기반 외삽([architecture.md §7](../architecture.md))이 있어야 생기는데 MVP에는 아직 없어서, 이 필드가 없는 한 이 WARN 조건은 발동하지 않는다 — 팀 미결 사항(Notion "!내부용! 논의사항" §WARN 트리거 조건 참고).
 
 ## `suggest_fix`
 

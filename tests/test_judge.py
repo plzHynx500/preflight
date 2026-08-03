@@ -125,3 +125,34 @@ def test_multiple_reasons_combine() -> None:
     assert result["verdict"] == "FAIL"
     assert "status_oom" in result["reasons"]
     assert "cpu_multiplier_low" in result["reasons"]
+
+
+def test_cpu_multiplier_exactly_at_threshold_is_pass() -> None:
+    """경계값(2배 정각)은 미만이 아니므로 WARN이 아니다."""
+    raw = {**_OK_RAW, "cpu_multiplier": 2.0}
+
+    result = judge_result(raw)
+
+    assert "cpu_multiplier_low" not in result["reasons"]
+    assert result["verdict"] == "PASS"
+
+
+def test_memory_delta_exactly_at_threshold_is_warn() -> None:
+    """경계값(15% 정각)은 이상이므로 WARN이다."""
+    raw = {**_OK_RAW, "memory_delta_mb": 115.0, "expected_memory_delta_mb": 100.0}
+
+    result = judge_result(raw)
+
+    assert "memory_delta_high" in result["reasons"]
+    assert result["verdict"] == "WARN"
+
+
+def test_device_cpu_fail_combined_with_unrelated_warn() -> None:
+    """4bit device=cpu(FAIL)와 cpu_multiplier 낮음(WARN)이 동시에 있어도 FAIL이 이긴다."""
+    raw = {**_OK_RAW, "device": "cpu", "cpu_multiplier": 1.5}
+
+    result = judge_result(raw)
+
+    assert result["verdict"] == "FAIL"
+    assert "quant_layer_device_cpu" in result["reasons"]
+    assert "cpu_multiplier_low" in result["reasons"]
