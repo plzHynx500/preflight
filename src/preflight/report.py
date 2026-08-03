@@ -93,6 +93,11 @@ def _vram_line(result: dict) -> _Line:
 
 
 def _quant_line(result: dict) -> _Line:
+    """기본 체크 전용 줄이다 — cli.md의 --model 예시에는 이 줄이 없다.
+
+    --model 모드는 raw 스키마에 quant_backend가 있어도 4bit 레이어 자체를
+    별도로 보여주지 않고 대신 VRAM·목표 크기 줄을 보여준다(_build_lines 참고).
+    """
     quant_backend = result.get("quant_backend")
     reasons = result.get("reasons", [])
     device = result.get("device")
@@ -114,6 +119,20 @@ def _quant_line(result: dict) -> _Line:
     return _Line("✔", "green", f"bitsandbytes 4bit 레이어    device={device} 정상")
 
 
+def _target_size_line(result: dict) -> _Line | None:
+    """--model 모드의 "목표 배치 크기 적합" 줄.
+
+    raw 스키마(docs/contracts/canary-api.md)에는 batch_size/seq_len을 결과에
+    되돌려주는 필드가 없다 — cli.py가 아직 이 값들을 result dict에 병합해주지
+    않는 한(W9 이후 배선) 이 줄은 만들 수 없으므로, 없으면 조용히 생략한다.
+    """
+    batch_size = result.get("batch_size")
+    seq_len = result.get("seq_len")
+    if batch_size is None or seq_len is None:
+        return None
+    return _Line("✔", "green", f"목표 배치 크기 적합    batch={batch_size}, seq={seq_len} 기준")
+
+
 def _is_model_mode(result: dict) -> bool:
     return result.get("cpu_multiplier") is None and result.get("status") == "ok"
 
@@ -126,11 +145,16 @@ def _build_lines(result: dict) -> list[_Line]:
         return lines
 
     if _is_model_mode(result):
+        # --model 모드: VRAM 실측 + (가능하면) 목표 크기 적합 — quant 줄은 없다
+        # (cli.md의 --model 예시 참고, 기본 체크 전용 줄이다).
         lines.append(_vram_line(result))
+        target_line = _target_size_line(result)
+        if target_line is not None:
+            lines.append(target_line)
     elif result.get("cpu_multiplier") is not None:
         lines.append(_timing_line(result))
+        lines.append(_quant_line(result))
 
-    lines.append(_quant_line(result))
     return lines
 
 

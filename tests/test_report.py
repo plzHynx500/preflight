@@ -233,3 +233,48 @@ def test_render_report_multiple_reasons_same_result(capsys) -> None:
     # 표시되지 않는다 — status 라인(FAIL)만 나온다.
     assert "CUDA Out of Memory" in out
     assert "1개 문제 발견" in out
+
+
+_MODEL_MODE_RAW = {
+    "status": "ok",
+    "device": "cuda",
+    "memory_delta_mb": 8600.0,
+    "elapsed_ms": None,
+    "cpu_multiplier": None,  # --model 모드는 cpu_multiplier를 재지 않는다
+    "quant_backend": "bnb-4bit",
+    "error_log": None,
+}
+
+
+def test_render_report_model_mode_shows_vram_not_quant_line(capsys) -> None:
+    """--model 모드(cli.md 두 번째 예시)는 quant/4bit 줄이 없고 VRAM 줄만 나온다."""
+    result = judge_result(_MODEL_MODE_RAW)
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "VRAM 실측" in out
+    assert "bitsandbytes" not in out
+
+
+def test_render_report_model_mode_target_size_shown_when_available(capsys) -> None:
+    raw = {**_MODEL_MODE_RAW, "batch_size": 2, "seq_len": 2048}
+    result = judge_result(raw)
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "목표 배치 크기 적합" in out
+    assert "batch=2, seq=2048" in out
+
+
+def test_render_report_model_mode_target_size_omitted_when_missing(capsys) -> None:
+    """batch_size/seq_len이 raw에 없으면(현재 스키마의 정상 상태) 크래시 없이 생략한다."""
+    result = judge_result(_MODEL_MODE_RAW)
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "목표 배치 크기 적합" not in out
+    assert "1개 모델 확인" in out
+    assert "문제 없음" in out
