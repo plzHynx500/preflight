@@ -25,13 +25,18 @@ def judge_result(raw: dict) -> dict:
     if raw.get("status") in FAIL_STATUSES:
         reasons.append(f"status_{raw['status']}")
 
-    # "4bit 레이어 device=cpu" 판정은 quant_backend가 실제로 bnb-4bit일 때만
-    # 의미가 있다. nn-linear-fallback이면 애초에 4bit 레이어가 없어 이 조건을
-    # 평가할 수 없으므로 건너뛰고, 대신 폴백이 있었다는 사실만 reasons에 남겨
-    # report.py가 화면에 표시할 수 있게 한다 (verdict 자체에는 영향 없음).
-    if raw.get("quant_backend") == "bnb-4bit" and raw.get("device") == "cpu":
+    # device=cpu는 quant_backend와 무관하게 그 자체로 FAIL이다 — 기본 체크의
+    # 목적 자체가 "GPU/드라이버/CUDA 체인이 물리적으로 살아있는가"라서(architecture.md
+    # §3), 4bit 레이어가 있든 없든 GPU를 못 타면 실패다. 원래는 quant_backend가
+    # bnb-4bit일 때만 이 조건을 봤는데, 그러면 bitsandbytes조차 없어 4bit 레이어
+    # 자체가 없는 환경(quant_backend="nn-linear-fallback")은 이 규칙이 발동을
+    # 못 해 device=cpu인 채로 PASS가 나가는 구멍이 있었다(#18, 상영님 지적).
+    # reason 이름은 report.py(#16)와의 호환을 위해 기존 이름을 유지한다.
+    if raw.get("device") == "cpu":
         reasons.append("quant_layer_device_cpu")
-    elif raw.get("quant_backend") == "nn-linear-fallback":
+    # quant_fallback은 device와 별개로, 폴백이 있었다는 사실 자체를 항상 알린다
+    # (판정에는 영향 없는 정보성 — report.py가 화면에 표시).
+    if raw.get("quant_backend") == "nn-linear-fallback":
         reasons.append("quant_fallback")
 
     # memory_delta_mb를 예측치와 비교하는 WARN 조건은 probe 기반 외삽(§7, 향후

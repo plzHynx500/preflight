@@ -59,19 +59,56 @@ def test_4bit_layer_on_cpu_is_fail() -> None:
     assert "quant_layer_device_cpu" in result["reasons"]
 
 
-def test_fallback_on_cpu_does_not_trigger_device_fail() -> None:
-    """nn-linear-fallback이면 4bit 레이어 자체가 없으므로 device=cpu 판정을 하지 않는다.
+def test_bnb_4bit_on_cuda_is_pass() -> None:
+    """quant_backend x device 조합표 1행 (#18)."""
+    raw = {**_OK_RAW, "device": "cuda", "quant_backend": "bnb-4bit"}
 
-    대신 폴백 사실만 reasons에 남기고, 그것만으로는 PASS를 유지한다
-    (quant_fallback은 정보성 표시일 뿐 verdict에 영향을 주지 않는다).
+    result = judge_result(raw)
+
+    assert result["reasons"] == []
+    assert result["verdict"] == "PASS"
+
+
+def test_bnb_4bit_on_cpu_is_fail() -> None:
+    """조합표 2행 — 기존에도 잡히던 케이스, 계속 잡혀야 한다."""
+    raw = {**_OK_RAW, "device": "cpu", "quant_backend": "bnb-4bit"}
+
+    result = judge_result(raw)
+
+    assert "quant_layer_device_cpu" in result["reasons"]
+    assert "quant_fallback" not in result["reasons"]
+    assert result["verdict"] == "FAIL"
+
+
+def test_fallback_on_cuda_is_pass_with_info_reason() -> None:
+    """조합표 3행 — 4bit은 못 쓰지만 GPU 자체는 정상이면 PASS + 정보성 표시만.
+
+    quant_fallback은 verdict에 영향을 주지 않는 정보성 reason이다.
     """
-    raw = {**_OK_RAW, "device": "cpu", "quant_backend": "nn-linear-fallback"}
+    raw = {**_OK_RAW, "device": "cuda", "quant_backend": "nn-linear-fallback"}
 
     result = judge_result(raw)
 
     assert "quant_layer_device_cpu" not in result["reasons"]
     assert "quant_fallback" in result["reasons"]
     assert result["verdict"] == "PASS"
+
+
+def test_fallback_on_cpu_is_fail() -> None:
+    """조합표 4행(#18에서 발견된 구멍) — GPU도 4bit도 안 되면 반드시 FAIL이어야 한다.
+
+    수정 전에는 quant_layer_device_cpu가 quant_backend=="bnb-4bit"일 때만
+    평가돼서, 이 조합(4bit 레이어 자체가 없는 환경)은 아무 FAIL도 안 걸리고
+    PASS로 새 나갔다 — device=="cpu"는 quant_backend와 무관하게 그 자체로
+    FAIL이어야 한다.
+    """
+    raw = {**_OK_RAW, "device": "cpu", "quant_backend": "nn-linear-fallback"}
+
+    result = judge_result(raw)
+
+    assert "quant_layer_device_cpu" in result["reasons"]
+    assert "quant_fallback" in result["reasons"]
+    assert result["verdict"] == "FAIL"
 
 
 def test_cpu_multiplier_below_threshold_is_warn() -> None:
