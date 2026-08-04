@@ -92,31 +92,47 @@ def _vram_line(result: dict) -> _Line:
     return _Line("✔", "green", f"VRAM 실측    {detail}")
 
 
-def _quant_line(result: dict) -> _Line:
-    """기본 체크 전용 줄이다 — cli.md의 --model 예시에는 이 줄이 없다.
+def _quant_lines(result: dict) -> list[_Line]:
+    """기본 체크 전용 줄(들)이다 — cli.md의 --model 예시에는 이 줄이 없다.
 
     --model 모드는 raw 스키마에 quant_backend가 있어도 4bit 레이어 자체를
     별도로 보여주지 않고 대신 VRAM·목표 크기 줄을 보여준다(_build_lines 참고).
+
+    device=cpu FAIL과 quant_fallback 정보성 표시는 judge.py에서 독립 조건이라
+    (#18) 동시에 참일 수 있다 — quant_backend="nn-linear-fallback" 인데
+    device도 cpu인 환경(GPU도 4bit도 안 됨)은 이 두 줄이 함께 나와야
+    "문제 있음"이 화면에서 사라지지 않는다. 리스트를 돌려주는 이유가 이거다.
     """
-    quant_backend = result.get("quant_backend")
     reasons = result.get("reasons", [])
+    quant_backend = result.get("quant_backend")
     device = result.get("device")
+    lines: list[_Line] = []
+
+    if "quant_layer_device_cpu" in reasons:
+        lines.append(
+            _Line(
+                "✖",
+                "red",
+                "bitsandbytes 4bit 레이어    device=cpu 감지 → 조용한 CPU 폴백",
+                is_problem=True,
+            )
+        )
 
     if quant_backend == "nn-linear-fallback" or "quant_fallback" in reasons:
-        return _Line(
-            "ℹ",
-            "dim",
-            f"4bit 레이어 폴백    {_REASON_MESSAGES['quant_fallback']}",
-            is_problem=False,
+        lines.append(
+            _Line(
+                "ℹ",
+                "dim",
+                f"4bit 레이어 폴백    {_REASON_MESSAGES['quant_fallback']}",
+                is_problem=False,
+            )
         )
-    if "quant_layer_device_cpu" in reasons:
-        return _Line(
-            "✖",
-            "red",
-            "bitsandbytes 4bit 레이어    device=cpu 감지 → 조용한 CPU 폴백",
-            is_problem=True,
-        )
-    return _Line("✔", "green", f"bitsandbytes 4bit 레이어    device={device} 정상")
+
+    if not lines:
+        # bnb-4bit + cuda: 문제도 폴백도 없는 정상 케이스만 여기 도달한다.
+        lines.append(_Line("✔", "green", f"bitsandbytes 4bit 레이어    device={device} 정상"))
+
+    return lines
 
 
 def _target_size_line(result: dict) -> _Line | None:
@@ -153,7 +169,7 @@ def _build_lines(result: dict) -> list[_Line]:
             lines.append(target_line)
     elif result.get("cpu_multiplier") is not None:
         lines.append(_timing_line(result))
-        lines.append(_quant_line(result))
+        lines.extend(_quant_lines(result))
 
     return lines
 

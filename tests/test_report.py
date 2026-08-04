@@ -91,7 +91,8 @@ def test_render_report_quant_layer_device_cpu_fail_text(capsys) -> None:
 
 
 def test_render_report_quant_fallback_is_informational_not_failure(capsys) -> None:
-    raw = {**_OK_RAW, "device": "cpu", "quant_backend": "nn-linear-fallback"}
+    """폴백 + device=cuda(#18 조합표 3행) — GPU는 정상이라 정보성 표시만 나온다."""
+    raw = {**_OK_RAW, "device": "cuda", "quant_backend": "nn-linear-fallback"}
     result = judge_result(raw)
     assert result["verdict"] == "PASS"
 
@@ -102,6 +103,21 @@ def test_render_report_quant_fallback_is_informational_not_failure(capsys) -> No
     assert "문제 없음" in out
     assert "✖" not in out
     assert "⚠" not in out
+
+
+def test_render_report_fallback_on_cpu_is_fail_with_both_lines(capsys) -> None:
+    """폴백 + device=cpu(#18 조합표 4행) — FAIL 줄과 폴백 정보 줄이 함께 나온다."""
+    raw = {**_OK_RAW, "device": "cpu", "quant_backend": "nn-linear-fallback"}
+    result = judge_result(raw)
+    assert result["verdict"] == "FAIL"
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "✖" in out
+    assert "device=cpu 감지" in out
+    assert "nn.Linear로 대체 실행됨" in out
+    assert "1개 문제 발견" in out
 
 
 def test_render_report_with_fix_shows_fix_command(capsys) -> None:
