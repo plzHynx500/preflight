@@ -75,13 +75,20 @@ def judge_result(raw: dict) -> dict:
 
 | 판정 | 조건 |
 |---|---|
-| FAIL | `status == "oom"` · `status == "import_crash"` · `status == "error"` · 4bit 레이어 device=cpu 감지 |
+| FAIL | `status == "oom"` · `status == "import_crash"` · `status == "error"` · **`device == "cpu"`**(`quant_backend`와 무관) |
 | WARN | `memory_delta_mb`가 예측 대비 15% 이상 벗어남 · `cpu_multiplier < 2` |
 | PASS | 위 조건에 전부 해당하지 않음 |
 
 FAIL 4개·WARN 2개, 총 6개 판정 항목 전부 MVP 구현으로 팀이 확정했다(`status == "error"`는 W5 구현 중 추가). 두 숫자(15%, 2배)는 정밀 검증된 값이 아니라 매직넘버로 우선 채택한 것이며, 실측 데이터가 쌓이면 조정한다.
 
-> "4bit 레이어 device=cpu" 조건은 `quant_backend == "bnb-4bit"`일 때만 판정할 수 있다 — `"nn-linear-fallback"`이면 애초에 4bit 레이어가 없으므로 이 항목은 판정 대상에서 빠지고, 대신 `reasons`에 `"quant_fallback"`이 정보성으로 남아 리포트에 폴백 사실이 드러난다(이 값 자체는 verdict에 영향을 주지 않는다).
+> **`device == "cpu"` FAIL은 `quant_backend`와 무관하게 적용된다** (2026-08-03, #18로 발견된 계약 구멍 수정). 기본 체크의 목적 자체가 "GPU/드라이버/CUDA 체인이 물리적으로 살아있는가"([architecture.md §3](../architecture.md))라서, 4bit 레이어 유무와 무관하게 device가 cpu면 그 자체로 실패다. 원래는 `quant_backend == "bnb-4bit"`일 때만 이 조건을 봤는데, 그러면 bitsandbytes 자체가 없어 4bit 레이어가 없는 환경(`quant_backend == "nn-linear-fallback"`)은 이 규칙이 발동하지 못해 GPU가 전혀 없는데도 PASS가 나가는 구멍이 있었다. reason 이름은 `"quant_layer_device_cpu"`를 그대로 쓴다(하위 호환). `quant_backend == "nn-linear-fallback"`이면 이 FAIL과 별개로 `reasons`에 `"quant_fallback"`이 항상 추가로 남아 폴백 사실도 함께 드러난다(이 값 자체는 verdict에 영향을 주지 않는 정보성이다).
+>
+> | `quant_backend` | `device` | 판정 |
+> |---|---|---|
+> | `bnb-4bit` | `cuda` | PASS |
+> | `bnb-4bit` | `cpu` | FAIL (`quant_layer_device_cpu`) |
+> | `nn-linear-fallback` | `cuda` | PASS (`reasons`에 정보성 `quant_fallback`만) |
+> | `nn-linear-fallback` | `cpu` | FAIL (`quant_layer_device_cpu` + `quant_fallback`) |
 
 > **`memory_delta_mb` 예측 비교는 현재 사실상 대기 상태다.** 15% 이탈 판정은 raw에 `expected_memory_delta_mb`(옵션, 위 7개 필드 스키마에는 없음)가 있을 때만 평가된다. 이 예측값은 probe 기반 외삽([architecture.md §7](../architecture.md))이 있어야 생기는데 MVP에는 아직 없어서, 이 필드가 없는 한 이 WARN 조건은 발동하지 않는다 — 팀 미결 사항(Notion "!내부용! 논의사항" §WARN 트리거 조건 참고).
 
