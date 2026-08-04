@@ -30,18 +30,55 @@ def build_dummy_model(model_name: str):
 
     가중치는 다운로드하지 않는다 — `AutoConfig.from_pretrained()`로 구조(config.json,
     수 KB)만 조회하고 `from_config()`로 랜덤 초기화한다(docs/architecture.md §5
-    MODULE-01). QLoRA(4bit) 래핑 등 학습 설정 세부 옵션은 MVP에서 고정 플래그가
-    없어 다루지 않는다(docs/architecture.md §3 "학습 설정 세부 옵션").
+    MODULE-01).
 
-    `(model, config)`를 함께 돌려준다 — `build_dummy_input()`이 토큰 ID를 만들려면
-    `config.vocab_size`가 필요하기 때문이다(docs/contracts/canary-api.md 참고, 상영님
-    지적 사항).
+    **QLoRA(4bit 양자화 + LoRA 어댑터)를 항상 적용한다** — 옵션이 아니라
+    architecture.md §3 "학습 설정 세부 옵션"의 고정 가정이다. 이게 없으면 8B급
+    모델 fp32 풀파인튜닝 기준 128GB(가중치 32GB+gradient 32GB+AdamW 상태 64GB)가
+    필요해 12GB급 GPU에서는 사실상 항상 OOM이 나서 VRAM 실측 자체가 불가능해진다
+    (2026-08-03, PR #12 리뷰 중 상영님이 지적 — 최초 구현이 이 가정을 놓쳐서
+    plain fp32 모델을 만들고 있었다).
+
+    4bit·LoRA 구성이 실패하면(bitsandbytes/peft 미설치 등) `build_minimal_canary_model`과
+    동일한 폴백 철학으로 평범한 fp32 전체 모델로 대체하고 그 사실을 `quant_backend`로
+    알린다 — 실패해도 여기서 죽지 않는다.
+
+    `(model, config, quant_backend)`를 돌려준다 — `config`는 `build_dummy_input()`이
+    토큰 ID를 만들 때 필요한 `vocab_size`를 담고 있고(docs/contracts/canary-api.md
+    참고), `quant_backend`는 W9에서 `run_canary_check()` 반환 스키마에 채워 넣을 값이다.
     """
-    from transformers import AutoConfig, AutoModelForCausalLM
+    from transformers import AutoConfig
 
     config = AutoConfig.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_config(config)
-    return model, config
+    model, quant_backend = _build_qlora_model(config)
+    return model, config, quant_backend
+
+
+def _build_qlora_model(config):
+    """4bit 양자화 + LoRA 어댑터가 적용된 랜덤 초기화 모델. 실패하면 fp32로 폴백."""
+    try:
+        import torch
+        from peft import LoraConfig, get_peft_model
+        from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        model = AutoModelForCausalLM.from_config(config, quantization_config=bnb_config)
+        lora_config = LoraConfig(
+            r=MINIMAL_ADAPTER_RANK,
+            target_modules="all-linear",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_config)
+        return model, QUANT_BACKEND_4BIT
+    except Exception:  # noqa: BLE001 - 실패 종류와 무관하게 fp32 폴백한다
+        from transformers import AutoModelForCausalLM
+
+        model = AutoModelForCausalLM.from_config(config)
+        return model, QUANT_BACKEND_FALLBACK
 
 
 def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int):
