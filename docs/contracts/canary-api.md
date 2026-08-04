@@ -43,9 +43,12 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 
 ```python
 def build_dummy_model(model_name: str):
-    """가중치 다운로드 없이 config만 조회해 랜덤 초기화 모델을 만든다."""
+    """가중치 다운로드 없이 config만 조회해 QLoRA(4bit+LoRA) 랜덤 초기화 모델을 만든다."""
     ...
-    return model, config  # config.vocab_size를 build_dummy_input에 넘기기 위해 함께 반환
+    return model, config, quant_backend
+    # config.vocab_size를 build_dummy_input에 넘기기 위해 함께 반환.
+    # quant_backend: "bnb-4bit" | "nn-linear-fallback" (run_canary_check 반환
+    # 스키마의 quant_backend와 동일한 값 — W9에서 그대로 채워 넣으면 된다)
 
 def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int):
     """토큰 ID(정수) 텐서. vocab_size가 있어야 유효한 범위의 ID를 만들 수 있다."""
@@ -57,6 +60,16 @@ def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int):
 `config.vocab_size`)가 있어야 만들 수 있어 W4 구현 중 `vocab_size` 파라미터를
 추가했다. W9에서 두 함수를 이어 쓸 때는 `build_dummy_model`이 돌려준 `config`에서
 `vocab_size`를 꺼내 `build_dummy_input`에 그대로 넘기면 된다.
+
+`build_dummy_model`은 **항상 QLoRA(4bit 양자화 + LoRA 어댑터)를 적용한다** —
+architecture.md §3 "학습 설정 세부 옵션"의 고정 가정이며, 옵션이 아니다(2026-08-03,
+상영님 지적으로 W4 최초 구현에서 이 가정이 빠져 있던 것을 발견·수정). 이게 없으면
+8B급 모델 fp32 풀파인튜닝 기준 128GB가 필요해 12GB급 GPU에서는 사실상 항상 OOM이
+나서 VRAM 실측 자체가 불가능해진다. 4bit·LoRA 구성이 실패하면(bitsandbytes/peft
+미설치 등) `build_minimal_canary_model`과 동일한 폴백 철학으로 fp32 전체 모델로
+대체하고 `quant_backend="nn-linear-fallback"`으로 알린다 — 이 경우 결과적으로
+OOM(`status="oom"`)이 나서 FAIL로 잡히는 것이 정상 동작이다(4bit/LoRA 없이 큰
+모델을 GPU에 올리면 거의 항상 메모리가 부족하기 때문).
 
 ## `judge_result`
 
