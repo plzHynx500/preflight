@@ -13,7 +13,7 @@ from preflight.canary.judge import judge_result
 def reverify(model: str | None, batch_size: int, seq_len: int) -> dict:
     """수정 명령어 실행 직후 canary를 동일 조건으로 재실행해 판정 결과를 반환한다."""
     raw = run_canary_check(
-        model=model,
+        model_name=model,
         batch_size=batch_size,
         seq_len=seq_len,
     )

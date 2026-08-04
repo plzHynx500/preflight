@@ -38,7 +38,7 @@ def check(
 ) -> None:
     """docs/contracts/canary-api.md §5.4 전체 흐름을 따른다."""
     raw = run_canary_check(
-        model=model,
+        model_name=model,
         batch_size=batch_size or 1,
         seq_len=seq_len or 8,
     )

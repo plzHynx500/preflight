@@ -38,7 +38,7 @@ def test_reverify_calls_engine_and_judge() -> None:
     ):
         res = reverify("meta-llama/Llama-3.1-8B", batch_size=2, seq_len=16)
         mock_engine.assert_called_once_with(
-            model="meta-llama/Llama-3.1-8B",
+            model_name="meta-llama/Llama-3.1-8B",
             batch_size=2,
             seq_len=16,
         )
