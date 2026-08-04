@@ -4,15 +4,24 @@ engine.run_canary_check()이 `python -m preflight.canary.worker <spec> <result>`
 모듈을 별도 프로세스에서 기동한다. import 크래시·OOM이 나도 부모 프로세스는 죽지
 않아야 한다 (docs/adr/0002-subprocess-isolation-for-canary.md 참고).
 
-**이 파일이 아직 담당하지 않는 것** — 실패를 `import_crash`/`oom`으로 세분화하는
-일은 W3(#2)의 범위다. 지금은 실행 중 어떤 예외가 나든 `status="error"`와 원본
-traceback으로 정규화한다. W3에서 import 구간을 별도 try로 분리하고
-`torch.cuda.OutOfMemoryError`를 예외 타입으로 잡아 세분화한다.
+## 죽는 방식이 두 가지라 대비도 두 겹이다
+
+**① 파이썬 예외로 잡히는 실패** — 구간별 `try`로 잡는다. import 구간에서 터지면
+`import_crash`, 실행 구간의 `torch.cuda.OutOfMemoryError`면 `oom`, 그 외는 `error`다.
+어느 예외 타입이냐가 아니라 **어느 구간에서 터졌느냐**로 나누므로, 에러 메시지
+문자열을 뒤지지 않는다 (docs/adr/0002 "텍스트 파싱이 아니라 안정된 속성으로").
+
+**② 프로세스가 통째로 죽는 실패** — `.so` 로드 실패는 파이썬 예외를 만들 기회조차
+없이 SIGSEGV로 즉사한다. `except`도 `finally`도 돌지 않으므로 "죽은 뒤에 기록"이
+불가능하다. 그래서 **죽기 전에 미리 기록**한다 — 자식은 시작하자마자 "여기서 죽으면
+이게 정답"인 결과를 써두고, 단계를 통과할 때마다 덮어쓴다. 어느 시점에 죽든 마지막
+기록이 남으므로 부모가 exit code를 해석할 필요가 없다(OS마다 다르다).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -25,38 +34,123 @@ from preflight.canary.model import (
 )
 
 STATUS_OK = "ok"
+STATUS_OOM = "oom"
+STATUS_IMPORT_CRASH = "import_crash"
 STATUS_ERROR = "error"
 
 # 기본 체크 크기 (docs/architecture.md §3). 호출 측이 값을 주지 않을 때만 쓴다.
 DEFAULT_BATCH_SIZE = 1
 DEFAULT_SEQ_LEN = 8
 
+_PREWRITE_IMPORT_NOTE = (
+    "canary 스택(torch/bitsandbytes)을 import하는 도중 프로세스가 예외 없이 종료됐다. "
+    "CUDA 라이브러리 .so 로드 실패로 인한 즉사가 대표적인 경우다."
+)
+_PREWRITE_RUN_NOTE = (
+    "canary 실행 도중 프로세스가 예외 없이 종료됐다. import는 통과한 상태였다. "
+    "호스트 RAM 부족으로 인한 강제 종료, 드라이버 크래시 등이 후보다 — "
+    "VRAM 부족(OOM)은 보통 예외로 잡히므로 이 경로로 오지 않는다."
+)
+
 
 def main() -> None:
     spec_path, result_path = sys.argv[1], sys.argv[2]
-    with open(spec_path, encoding="utf-8") as spec_file:
-        spec = json.load(spec_file)
+
+    # 죽기 전에 미리 기록한다. 지금부터 import를 통과하기 전까지 프로세스가 즉사하면
+    # 이 결과가 그대로 부모에게 읽힌다.
+    _write_result(result_path, _blank_result(STATUS_IMPORT_CRASH, _PREWRITE_IMPORT_NOTE))
 
     try:
-        result = _run(spec)
-    except Exception:  # noqa: BLE001 - 어떤 실패든 진단 결과로 포장해야 한다
-        result = {
-            "status": STATUS_ERROR,
-            "device": None,
-            "memory_delta_mb": None,
-            "elapsed_ms": None,
-            "cpu_multiplier": None,
-            "quant_backend": None,
-            "error_log": traceback.format_exc(),
-        }
+        with open(spec_path, encoding="utf-8") as spec_file:
+            spec = json.load(spec_file)
+    except Exception:  # noqa: BLE001 - spec을 못 읽는 것도 진단 결과로 포장한다
+        _write_result(result_path, _blank_result(STATUS_ERROR, traceback.format_exc()))
+        return
 
-    with open(result_path, "w", encoding="utf-8") as result_file:
-        json.dump(result, result_file, ensure_ascii=False)
+    try:
+        torch = _import_canary_stack()
+    except BaseException:  # noqa: BLE001 - SystemExit까지 포함해 import 실패로 본다
+        _write_result(result_path, _blank_result(STATUS_IMPORT_CRASH, traceback.format_exc()))
+        return
+
+    # import를 통과했다 — 여기서부터 즉사하면 더 이상 import 문제가 아니다.
+    _write_result(result_path, _blank_result(STATUS_ERROR, _PREWRITE_RUN_NOTE))
+
+    try:
+        result = _run(torch, spec)
+    except Exception as exc:  # noqa: BLE001 - 어떤 실패든 진단 결과로 포장해야 한다
+        status = STATUS_OOM if _is_oom(torch, exc) else STATUS_ERROR
+        result = _blank_result(status, traceback.format_exc())
+
+    _write_result(result_path, result)
 
 
-def _run(spec: dict) -> dict:
+def _import_canary_stack():
+    """canary 스택을 미리 import해 즉사 가능 구간을 앞쪽에 몰아둔다.
+
+    bitsandbytes가 **파이썬 예외로** 실패하는 경우(구버전·빌드 문제)는 크래시가
+    아니라 폴백 대상이므로 여기서 삼킨다 — model.py가 다시 시도하며 `nn.Linear`로
+    대체하고 그 사실을 `quant_backend`로 알린다 (docs/architecture.md §6-01).
+    반대로 .so 로드 실패로 프로세스가 즉사하면 main()이 미리 써둔 import_crash가
+    그대로 남는다.
+    """
     import torch
 
+    _try_import_bitsandbytes()
+    return torch
+
+
+def _try_import_bitsandbytes() -> bool:
+    try:
+        import bitsandbytes  # noqa: F401
+    except Exception:  # noqa: BLE001 - 실패 종류와 무관하게 폴백에 맡긴다
+        return False
+    return True
+
+
+def _blank_result(status: str, error_log: str | None) -> dict:
+    """측정값이 없는 실패 결과. 계약 스키마(docs/contracts/canary-api.md)를 채운다."""
+    return {
+        "status": status,
+        "device": None,
+        "memory_delta_mb": None,
+        "elapsed_ms": None,
+        "cpu_multiplier": None,
+        "quant_backend": None,
+        "error_log": error_log,
+    }
+
+
+def _write_result(result_path: str, payload: dict) -> None:
+    """원자적으로 기록한다 — 임시 파일에 다 쓴 뒤 이름만 바꾼다.
+
+    `open(path, "w")`는 여는 순간 기존 내용을 먼저 지운다. 지운 뒤 새 내용을 쓰기
+    전에 프로세스가 죽으면 **직전에 미리 써둔 정보까지 함께 날아간다.** rename은
+    파일시스템이 보장하는 원자적 연산이라 "반쯤 바뀐" 상태가 없으므로, 실패해도
+    이전 기록이 그대로 살아남는다.
+    """
+    tmp_path = result_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as tmp_file:
+        json.dump(payload, tmp_file, ensure_ascii=False)
+        tmp_file.flush()
+        os.fsync(tmp_file.fileno())
+    os.replace(tmp_path, result_path)
+
+
+def _is_oom(torch, exc: BaseException) -> bool:
+    """VRAM 부족 예외인지 **타입으로** 판별한다 — 메시지 문자열은 보지 않는다.
+
+    `torch.cuda.OutOfMemoryError`는 `RuntimeError`의 자식이라 일반 예외보다 먼저
+    걸러야 한다. 이 타입이 없는 구버전 torch에서는 판별하지 않고 `error`로 둔다 —
+    추측해서 `oom`이라고 적으면 사용자가 batch를 줄이라는 엉뚱한 안내를 받는다.
+    """
+    oom_type = getattr(torch, "OutOfMemoryError", None)
+    if oom_type is None:
+        oom_type = getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None)
+    return oom_type is not None and isinstance(exc, oom_type)
+
+
+def _run(torch, spec: dict) -> dict:
     model_name = spec.get("model_name")
     batch_size = int(spec.get("batch_size") or DEFAULT_BATCH_SIZE)
     seq_len = int(spec.get("seq_len") or DEFAULT_SEQ_LEN)
@@ -121,8 +215,10 @@ def _measure_cpu_baseline(torch, batch_size: int, seq_len: int, quant_backend: s
 def _measure(torch, device: str, dtype, batch_size: int, seq_len: int, prefer_4bit: bool = True):
     try:
         return _measure_once(torch, device, dtype, batch_size, seq_len, prefer_4bit)
-    except Exception:
-        if not prefer_4bit:
+    except Exception as exc:
+        # OOM은 폴백으로 해결되지 않는다 — nn.Linear로 다시 돌려도 메모리는 그대로
+        # 부족하다. 재시도하면 시간만 버리고 원래 원인(oom)도 흐려지므로 그대로 올린다.
+        if not prefer_4bit or _is_oom(torch, exc):
             raise
         # 구버전 bitsandbytes 등으로 4bit 경로가 통째로 실패하면 평범한 nn.Linear로
         # 한 번만 더 시도한다 (docs/architecture.md §6-01 "구버전 bnb 대응").

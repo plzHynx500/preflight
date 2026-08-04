@@ -59,20 +59,34 @@ def _run_worker(model_name: str | None, batch_size: int, seq_len: int) -> dict:
         with open(spec_path, "w", encoding="utf-8") as spec_file:
             json.dump(spec, spec_file, ensure_ascii=False)
 
-        completed = subprocess.run(
-            [sys.executable, "-m", "preflight.canary.worker", spec_path, result_path],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=WORKER_TIMEOUT_SEC,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-m", "preflight.canary.worker", spec_path, result_path],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=WORKER_TIMEOUT_SEC,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            # subprocess.run이 자식을 종료시킨 뒤 올라온다. 자식이 어느 단계까지
+            # 갔었는지는 그때까지 기록해둔 결과 파일이 알려준다.
+            return _normalize(
+                _read_result(result_path)
+                or {
+                    "status": "error",
+                    "error_log": (
+                        f"canary 자식 프로세스가 {WORKER_TIMEOUT_SEC}초 안에 끝나지 않아 "
+                        "강제 종료했다."
+                    ),
+                }
+            )
 
         raw = _read_result(result_path)
         if raw is None:
-            # 자식이 결과를 남기지 못하고 죽은 경우(.so 로드 실패로 인한 즉사 등).
-            # 어느 단계에서 죽었는지 구분하는 일은 W3(#2)에서 다룬다.
+            # 자식이 사전 기록조차 남기지 못한 경우 — 프로세스 기동 자체가 실패했거나
+            # 결과 파일을 쓸 수 없는 상황이다.
             return _normalize({"status": "error", "error_log": _crash_log(completed)})
         return _normalize(raw)
     finally:
