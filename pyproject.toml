@@ -40,6 +40,14 @@ packages = ["src/preflight"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# network 마커 테스트는 기본 실행에서 제외한다 — HuggingFace Hub에서 config.json을
+# 받아오는 등 실제 네트워크·transformers/bitsandbytes 실물 라이브러리가 필요해서,
+# 이 저장소의 하드 의존성만으로는(torch/transformers/bitsandbytes는 의도적으로
+# 하드 의존성이 아님) 항상 돌 수 없다. `pytest -m network`로 명시적으로 켠다
+# (2026-08-06, 상영님 제안 — 모킹 테스트가 "실제로 통합됐는지"까지는 검증 못 해서
+# QLoRA 구현이 통째로 죽어있던 걸 못 잡았던 문제의 재발 방지).
+addopts = "-m 'not network'"
+markers = ["network: HuggingFace Hub 등 실제 네트워크·실물 라이브러리가 필요한 테스트"]
 
 [tool.ruff]
 line-length = 100
