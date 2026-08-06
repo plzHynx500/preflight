@@ -27,7 +27,7 @@ def test_classify_and_suggest_bnb_not_compiled() -> None:
     res1 = {
         "status": "import_crash",
         "verdict": "FAIL",
-        "reasons": ["import_crash"],
+        "reasons": ["status_import_crash"],
         "error_log": "libbitsandbytes_cpu.so CUDA Setup failed",
     }
     assert classify_cause(res1) == "bnb_not_compiled_with_cuda"
@@ -39,8 +39,10 @@ def test_classify_and_suggest_bnb_not_compiled() -> None:
     # case 2: 4bit cpu fallback with compiled_with_cuda=False
     res2 = {
         "status": "ok",
+        "device": "cpu",
+        "quant_backend": "bnb-4bit",
         "verdict": "FAIL",
-        "reasons": ["4bit_cpu_fallback"],
+        "reasons": ["quant_layer_device_cpu"],
         "compiled_with_cuda": False,
     }
     assert classify_cause(res2) == "bnb_not_compiled_with_cuda"
@@ -54,7 +56,7 @@ def test_classify_and_suggest_import_general() -> None:
     res = {
         "status": "import_crash",
         "verdict": "FAIL",
-        "reasons": ["import_crash"],
+        "reasons": ["status_import_crash"],
         "error_log": "ModuleNotFoundError: No module named 'custom_mod'",
     }
     assert classify_cause(res) == "import_crash_general"
@@ -67,8 +69,10 @@ def test_classify_and_suggest_import_general() -> None:
 def test_classify_and_suggest_4bit_cpu_other() -> None:
     res = {
         "status": "ok",
+        "device": "cpu",
+        "quant_backend": "bnb-4bit",
         "verdict": "FAIL",
-        "reasons": ["4bit_cpu_fallback"],
+        "reasons": ["quant_layer_device_cpu"],
         "compiled_with_cuda": True,
     }
     assert classify_cause(res) == "4bit_cpu_fallback_other"
@@ -82,7 +86,7 @@ def test_classify_and_suggest_oom() -> None:
     res = {
         "status": "oom",
         "verdict": "FAIL",
-        "reasons": ["oom"],
+        "reasons": ["status_oom"],
     }
     assert classify_cause(res) == "oom"
     fix = suggest_fix(res)
@@ -177,7 +181,7 @@ def test_cli_check_without_yes_does_not_execute_fix() -> None:
     fake_res = {
         "status": "import_crash",
         "verdict": "FAIL",
-        "reasons": ["import_crash"],
+        "reasons": ["status_import_crash"],
         "error_log": "CUDA Setup failed",
     }
 
@@ -198,7 +202,7 @@ def test_cli_check_with_yes_executes_fix() -> None:
     fake_res = {
         "status": "import_crash",
         "verdict": "FAIL",
-        "reasons": ["import_crash"],
+        "reasons": ["status_import_crash"],
         "error_log": "CUDA Setup failed",
     }
 

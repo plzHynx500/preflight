@@ -72,6 +72,14 @@ def suggest_fix(check_result: dict) -> dict | None:
     if check_result.get("verdict") == "PASS":
         return None
 
+    if "compiled_with_cuda" not in check_result:
+        try:
+            import bitsandbytes.cextension.lib as bnb_lib
+
+            check_result["compiled_with_cuda"] = getattr(bnb_lib, "compiled_with_cuda", False)
+        except (ImportError, AttributeError):
+            check_result["compiled_with_cuda"] = False
+
     cause = classify_cause(check_result)
     if cause == "pass":
         return None
