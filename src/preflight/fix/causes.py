@@ -23,21 +23,19 @@ def classify_cause(check_result: dict) -> str:
         return "pass"
 
     # 2. FAIL - import_crash
-    if status == "import_crash" or "import_crash" in reasons:
+    if status == "import_crash" or "status_import_crash" in reasons:
         error_lower = error_log.lower()
         if "bitsandbytes" in error_lower or "cuda" in error_lower:
             return "bnb_not_compiled_with_cuda"
         return "import_crash_general"
 
     # 3. FAIL - oom
-    if status == "oom" or "oom" in reasons:
+    if status == "oom" or "status_oom" in reasons:
         return "oom"
 
     # 4. FAIL - 4bit cpu fallback
-    is_cpu_fallback = (
-        "4bit_cpu_fallback" in reasons
-        or "device_cpu" in reasons
-        or (check_result.get("quant_backend") == "bnb-4bit" and check_result.get("device") == "cpu")
+    is_cpu_fallback = "quant_layer_device_cpu" in reasons or (
+        check_result.get("quant_backend") == "bnb-4bit" and check_result.get("device") == "cpu"
     )
     if is_cpu_fallback:
         if check_result.get("compiled_with_cuda") is False:
