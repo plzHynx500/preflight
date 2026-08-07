@@ -71,12 +71,12 @@ def main() -> None:
     try:
         torch = _import_canary_stack()
     except BaseException:  # noqa: BLE001 - SystemExit까지 포함해 import 실패로 본다
-        # import가 **예외로** 실패한 경우다(즉사가 아니라). 원인을 좁히는 게 이 필드의
-        # 존재 이유이므로, 여기서도 얻을 수 있는 속성은 담는다 — 항목별로 실패해도
-        # 그 항목만 None이 된다. 위 사전 기록이 이미 디스크에 있어 여기서 죽어도 안전하다.
+        # 여기서 _collect_env()를 부르지 않는다 — 방금 실패한 import를 그대로 다시
+        # 시도하는 꼴이라 결과는 어차피 전부 None이고 위험만 반복된다. 형태만 맞춘
+        # 골격을 넘겨 소비자가 `env`의 유무를 따로 방어하지 않게 한다.
         _write_result(
             result_path,
-            _blank_result(STATUS_IMPORT_CRASH, traceback.format_exc(), _collect_env()),
+            _blank_result(STATUS_IMPORT_CRASH, traceback.format_exc(), _empty_env()),
         )
         return
 
@@ -150,6 +150,28 @@ def _read_bnb_compiled_with_cuda():
     return bool(lib.compiled_with_cuda)
 
 
+#: `env`가 담는 키. 아무것도 못 읽는 환경에서도 이 형태는 유지된다 — 소비자가
+#: 키 존재 여부까지 따로 방어하지 않아도 되게 한다.
+ENV_FIELDS = (
+    "torch_version",
+    "torch_cuda_version",
+    "bnb_compiled_with_cuda",
+    # CPU 기준선을 실제로 4bit으로 잴 수 있었는지. 4bit을 시도한 경우에만 채워지고,
+    # 시도조차 안 한 경우(GPU 쪽이 이미 폴백)는 None으로 남는다 — _run_basic_check 참고.
+    "bnb_cpu_4bit_supported",
+)
+
+
+def _empty_env() -> dict:
+    """아무 속성도 읽을 수 없을 때의 골격 — 키는 유지하고 값만 전부 None이다.
+
+    `import torch`가 이미 실패한 상황에서 쓴다. 거기서 `_collect_env()`를 부르면
+    **방금 죽은 import를 그대로 다시 시도**하는 꼴인데, 실패한 import는 캐시되지
+    않아 모듈이 재실행되고 같은 이유로 또 실패한다 — 얻는 것 없이 위험만 반복한다.
+    """
+    return dict.fromkeys(ENV_FIELDS)
+
+
 def _collect_env() -> dict:
     """원인 분류용 환경 속성 (docs/contracts/canary-api.md의 `env`).
 
@@ -159,14 +181,11 @@ def _collect_env() -> dict:
 
     항목별로 독립적으로 실패할 수 있고, 실패한 항목만 None이 된다.
     """
-    return {
-        "torch_version": _safe_read(_read_torch_version),
-        "torch_cuda_version": _safe_read(_read_torch_cuda_version),
-        "bnb_compiled_with_cuda": _safe_read(_read_bnb_compiled_with_cuda),
-        # CPU 기준선을 실제로 4bit으로 잴 수 있었는지. 4bit을 시도한 경우에만 채워지고,
-        # 시도조차 안 한 경우(GPU 쪽이 이미 폴백)는 None으로 남는다 — _run_basic_check 참고.
-        "bnb_cpu_4bit_supported": None,
-    }
+    env = _empty_env()
+    env["torch_version"] = _safe_read(_read_torch_version)
+    env["torch_cuda_version"] = _safe_read(_read_torch_cuda_version)
+    env["bnb_compiled_with_cuda"] = _safe_read(_read_bnb_compiled_with_cuda)
+    return env
 
 
 def _read_rss_mb():

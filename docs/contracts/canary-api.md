@@ -55,7 +55,9 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 
 **자식이 읽어야 한다.** 이 값들을 읽으려면 `torch`·`bitsandbytes`를 import해야 하는데, 진단 대상이 바로 *"그 import가 죽는 환경"* 이다. 부모가 읽으면 원인을 확인하려다 CLI까지 함께 죽어 FR-03 격리가 무너진다([ADR-0002](../adr/0002-subprocess-isolation-for-canary.md), Issue #19).
 
-항목은 **독립적으로 실패**할 수 있고, 실패한 항목만 `None`이 된다. `status == "import_crash"`일 때도 `env`는 dict로 온다 — 원인을 좁히는 것이 이 필드의 존재 이유라, 정작 그 상황에서 비어버리면 의미가 없다. 반대로 `env` 자체를 못 받는 경우(구버전 canary 등)는 `None`이므로, 소비자는 `(raw.get("env") or {}).get(...)` 형태로 읽어야 한다.
+항목은 **독립적으로 실패**할 수 있고, 실패한 항목만 `None`이 된다. `status == "import_crash"`여서 아무 속성도 못 읽은 경우에도 **키는 유지한 채 값만 전부 `None`인 dict**가 온다 — 소비자가 키 존재 여부까지 따로 방어하지 않게 하기 위함이다. 이때 속성을 다시 읽으려 시도하지는 않는다(방금 실패한 import를 반복할 뿐이다).
+
+`env` 자체를 못 받는 경우(구버전 canary 등)는 `None`이므로, 소비자는 `(raw.get("env") or {}).get(...)` 형태로 읽어야 한다.
 
 > **`env`는 여럿이 쌓아가는 칸이다 — 대입하지 말 것.** 자식이 라이브러리 상태를 채운 뒤, 부모(`cli`)가 GPU 정보를 **얹는다**. `raw["env"] = {...}`로 대입하면 자식이 채운 값이 통째로 사라지고, **에러 없이 원인 분류만 조용히 실패**해 잡기 어렵다.
 >

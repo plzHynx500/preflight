@@ -308,19 +308,14 @@ def test_write_result_leaves_no_temp_file(tmp_path) -> None:
 
 # ── 환경 속성 공급 (#19) ─────────────────────────────────────────────────────
 
-_ENV_FIELDS = {
-    "torch_version",
-    "torch_cuda_version",
-    "bnb_compiled_with_cuda",
-    "bnb_cpu_4bit_supported",
-}
+_ENV_FIELDS = set(worker.ENV_FIELDS)
 
 
 def test_env_is_supplied_even_when_import_fails(fake_module) -> None:
-    """import가 깨진 환경에서도 `env`가 dict로 온다.
+    """import가 깨진 환경에서도 `env`가 dict로 온다 — 값은 전부 None이다.
 
-    이 필드의 존재 이유가 **바로 그 환경의 원인을 좁히는 것**이라, import 실패 시
-    비어버리면 만든 의미가 없다. 못 읽은 항목만 None이고 형태는 유지된다.
+    소비자가 `env`의 유무까지 따로 방어하지 않게 형태만 맞춰 보낸다. 이때 속성을
+    다시 읽으려 들지는 않는다 — 방금 실패한 import를 반복하는 것뿐이다.
     """
     fake_module("torch", 'raise ImportError("libcudart.so.12: cannot open shared object file")')
 
@@ -328,7 +323,7 @@ def test_env_is_supplied_even_when_import_fails(fake_module) -> None:
 
     assert result["status"] == "import_crash"
     assert set(result["env"]) == _ENV_FIELDS
-    assert result["env"]["torch_version"] is None
+    assert all(value is None for value in result["env"].values()), result["env"]
 
 
 def test_non_dict_env_is_normalized_to_none(monkeypatch) -> None:
@@ -347,11 +342,12 @@ def test_non_dict_env_is_normalized_to_none(monkeypatch) -> None:
 
 
 @requires_cuda
-def test_env_is_populated_on_real_run() -> None:
-    """실제 실행에서 환경 속성이 채워지는지 확인한다."""
+def test_env_and_rss_are_populated_on_real_run() -> None:
+    """정상 완료 경로에서 환경 속성과 RSS가 실제로 채워지는지 확인한다."""
     result = run_canary_check(None, 1, 8)
 
     assert result["status"] == "ok", result["error_log"]
+    assert result["rss_mb"] > 0
     env = result["env"]
     assert set(env) == _ENV_FIELDS
     assert env["torch_version"]
@@ -401,15 +397,5 @@ def test_rss_survives_process_death_without_exception(fake_module) -> None:
     result = run_canary_check(None, 1, 8)
 
     assert result["status"] == "import_crash", result["error_log"]
-    assert result["rss_mb"] is not None
-    assert result["rss_mb"] > 0
-
-
-def test_rss_is_recorded_on_normal_completion(fake_module) -> None:
-    """정상 완료 경로에서도 값이 남는다 (import 실패 경로와 별개 지점)."""
-    fake_module("torch", 'raise ImportError("no torch")')
-
-    result = run_canary_check(None, 1, 8)
-
     assert result["rss_mb"] is not None
     assert result["rss_mb"] > 0
