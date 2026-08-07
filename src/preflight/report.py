@@ -18,7 +18,7 @@ _REASON_MESSAGES: dict[str, str] = {
         "구버전 bitsandbytes 등으로 4bit 레이어 구성 실패 → nn.Linear로 대체 실행됨"
         " (device=cpu 판정 생략)"
     ),
-    "memory_delta_high": "메모리 사용량이 예측 대비 15% 이상 벗어남",
+    "memory_delta_high": "canary 실행만으로 가용 VRAM의 90% 이상을 소모 — 실제 학습 시 OOM 위험 높음",
     "cpu_multiplier_low": "CPU 대비 실행 속도가 2배 미만 (성능 저하 가능성)",
 }
 
@@ -187,11 +187,33 @@ def _render_fix_block(console: Console, result: dict) -> None:
         console.print(f"안내: {message}")
 
 
+def _group_label(index: int, result: dict) -> str:
+    """결과가 여러 개일 때(기본 체크 + --model 체크) 각 블록 앞에 붙일 표제.
+
+    cli.py는 항상 기본 체크를 먼저 실행하고 --model이 주어졌을 때만 모델 체크를
+    이어 붙이므로(cli.md §명령어), results 리스트에서 index 0은 항상 기본
+    체크다. model_name은 raw 스키마 7개 필드에는 없지만(canary-api.md), cli.py가
+    --model 체크 result에 병합해줄 값이라 있으면 표제에 함께 보여준다.
+    """
+    if index == 0:
+        return "기본 체크"
+    model_name = result.get("model_name")
+    return f"모델 체크: {model_name}" if model_name else "모델 체크"
+
+
 def _render_text(results: list[dict], elapsed_seconds: float | None) -> None:
     console = Console()
+    # 결과가 2개 이상(기본 체크 + --model 체크)일 때만 구분 표제를 붙인다 —
+    # 단일 결과(기존 출력)는 지금까지의 화면 그대로 유지해 하위 호환을 지킨다.
+    show_group_labels = len(results) > 1
 
     all_lines: list[_Line] = []
-    for result in results:
+    for index, result in enumerate(results):
+        if show_group_labels:
+            if index > 0:
+                console.print()
+            console.print(f"[bold]{_group_label(index, result)}[/bold]")
+
         lines = _build_lines(result)
         all_lines.extend(lines)
         for line in lines:

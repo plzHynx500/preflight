@@ -294,3 +294,55 @@ def test_render_report_model_mode_target_size_omitted_when_missing(capsys) -> No
     assert "목표 배치 크기 적합" not in out
     assert "1개 모델 확인" in out
     assert "문제 없음" in out
+
+
+def test_render_report_single_result_has_no_group_label(capsys) -> None:
+    """결과가 1개뿐이면(기존 출력) 표제를 붙이지 않는다 — 하위 호환."""
+    result = judge_result(_OK_RAW)
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "기본 체크" not in out
+    assert "모델 체크" not in out
+
+
+def test_render_report_two_results_get_group_labels(capsys) -> None:
+    """--model이 주어지면 기본 체크 + 모델 체크 결과 2개가 순서대로 라벨과 함께 나온다."""
+    basic_result = judge_result(_OK_RAW)
+    model_result = judge_result({**_MODEL_MODE_RAW, "model_name": "meta-llama/Llama-3.1-8B"})
+
+    render_report([basic_result, model_result])
+
+    out = capsys.readouterr().out
+    basic_idx = out.index("기본 체크")
+    model_idx = out.index("모델 체크: meta-llama/Llama-3.1-8B")
+    assert basic_idx < model_idx
+    assert "VRAM 실측" in out
+    assert "bitsandbytes 4bit 레이어" in out
+
+
+def test_render_report_two_results_model_label_without_model_name(capsys) -> None:
+    """model_name이 아직 result에 병합되지 않은 현재 스키마에서도 라벨은 안전하게 생략된다."""
+    basic_result = judge_result(_OK_RAW)
+    model_result = judge_result(_MODEL_MODE_RAW)
+
+    render_report([basic_result, model_result])
+
+    out = capsys.readouterr().out
+    assert "기본 체크" in out
+    assert "모델 체크" in out
+
+
+def test_render_report_two_results_json_mode_unaffected(capsys) -> None:
+    """--json 모드는 그룹 라벨과 무관하게 results를 가공 없이 그대로 담는다(cli.md 계약)."""
+    basic_result = judge_result(_OK_RAW)
+    model_result = judge_result(_MODEL_MODE_RAW)
+
+    render_report([basic_result, model_result], json_output=True)
+
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert len(payload["results"]) == 2
+    assert "기본 체크" not in out
+    assert "모델 체크" not in out
