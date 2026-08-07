@@ -36,14 +36,14 @@ def test_classify_and_suggest_bnb_not_compiled() -> None:
     assert fix1["cause"] == "bnb_not_compiled_with_cuda"
     assert fix1["fix_command"] == "pip install bitsandbytes --upgrade --force-reinstall"
 
-    # case 2: 4bit cpu fallback with compiled_with_cuda=False
+    # case 2: 4bit cpu fallback — canary 자식이 채워 보낸 env로 판별한다 (#19)
     res2 = {
         "status": "ok",
         "device": "cpu",
         "quant_backend": "bnb-4bit",
         "verdict": "FAIL",
         "reasons": ["quant_layer_device_cpu"],
-        "compiled_with_cuda": False,
+        "env": {"bnb_compiled_with_cuda": False},
     }
     assert classify_cause(res2) == "bnb_not_compiled_with_cuda"
     fix2 = suggest_fix(res2)
@@ -73,13 +73,31 @@ def test_classify_and_suggest_4bit_cpu_other() -> None:
         "quant_backend": "bnb-4bit",
         "verdict": "FAIL",
         "reasons": ["quant_layer_device_cpu"],
-        "compiled_with_cuda": True,
+        "env": {"bnb_compiled_with_cuda": True},
     }
     assert classify_cause(res) == "4bit_cpu_fallback_other"
     fix = suggest_fix(res)
     assert fix is not None
     assert fix["cause"] == "4bit_cpu_fallback_other"
     assert fix["fix_command"] is None
+
+
+def test_classify_falls_back_when_env_is_missing() -> None:
+    """`env`를 못 받은 경우(구버전 canary·수집 실패)에도 분류가 죽지 않는다.
+
+    "CUDA 지원 없이 빌드됨"을 **모르는 것**과 **아닌 것**은 다르다. 모를 때 재설치
+    명령을 띄우면, bitsandbytes가 멀쩡한 사용자에게 엉뚱한 조치를 안내하게 된다.
+    """
+    base = {
+        "status": "ok",
+        "device": "cpu",
+        "quant_backend": "bnb-4bit",
+        "verdict": "FAIL",
+        "reasons": ["quant_layer_device_cpu"],
+    }
+    for env in (None, {}, {"bnb_compiled_with_cuda": None}):
+        assert classify_cause({**base, "env": env}) == "4bit_cpu_fallback_other", env
+    assert classify_cause(base) == "4bit_cpu_fallback_other"
 
 
 def test_classify_and_suggest_oom() -> None:

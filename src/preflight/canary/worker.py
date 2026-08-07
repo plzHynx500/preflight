@@ -20,6 +20,7 @@ engine.run_canary_check()이 `python -m preflight.canary.worker <spec> <result>`
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import sys
@@ -70,17 +71,24 @@ def main() -> None:
     try:
         torch = _import_canary_stack()
     except BaseException:  # noqa: BLE001 - SystemExit까지 포함해 import 실패로 본다
-        _write_result(result_path, _blank_result(STATUS_IMPORT_CRASH, traceback.format_exc()))
+        # import가 **예외로** 실패한 경우다(즉사가 아니라). 원인을 좁히는 게 이 필드의
+        # 존재 이유이므로, 여기서도 얻을 수 있는 속성은 담는다 — 항목별로 실패해도
+        # 그 항목만 None이 된다. 위 사전 기록이 이미 디스크에 있어 여기서 죽어도 안전하다.
+        _write_result(
+            result_path,
+            _blank_result(STATUS_IMPORT_CRASH, traceback.format_exc(), _collect_env()),
+        )
         return
 
     # import를 통과했다 — 여기서부터 즉사하면 더 이상 import 문제가 아니다.
-    _write_result(result_path, _blank_result(STATUS_ERROR, _PREWRITE_RUN_NOTE))
+    env = _collect_env()
+    _write_result(result_path, _blank_result(STATUS_ERROR, _PREWRITE_RUN_NOTE, env))
 
     try:
-        result = _run(torch, spec)
+        result = _run(torch, spec, env)
     except Exception as exc:  # noqa: BLE001 - 어떤 실패든 진단 결과로 포장해야 한다
         status = STATUS_OOM if _is_oom(torch, exc) else STATUS_ERROR
-        result = _blank_result(status, traceback.format_exc())
+        result = _blank_result(status, traceback.format_exc(), env)
 
     _write_result(result_path, result)
 
@@ -108,8 +116,130 @@ def _try_import_bitsandbytes() -> bool:
     return True
 
 
-def _blank_result(status: str, error_log: str | None) -> dict:
-    """측정값이 없는 실패 결과. 계약 스키마(docs/contracts/canary-api.md)를 채운다."""
+def _safe_read(reader):
+    """속성 하나를 읽는다. 어떤 이유로든 실패하면 None.
+
+    환경 속성은 **원인 분류를 돕는 부가 정보**지 진단의 전제가 아니다. 하나를 못
+    읽었다고 canary 실행 자체를 멈추면, 정작 진단해야 할 환경(라이브러리가 깨진
+    환경)에서 아무 결과도 못 내놓게 된다.
+    """
+    try:
+        return reader()
+    except Exception:  # noqa: BLE001 - 속성 하나를 못 읽는 건 진단 실패가 아니다
+        return None
+
+
+def _read_torch_version():
+    import torch
+
+    return torch.__version__
+
+
+def _read_torch_cuda_version():
+    import torch
+
+    # None이면 CPU 전용 빌드 — "GPU가 없다"와 "torch가 GPU를 모른다"를 가르는 값이다.
+    return torch.version.cuda
+
+
+def _read_bnb_compiled_with_cuda():
+    # `lib`은 모듈이 아니라 `cextension` 모듈의 **속성**이다. `import a.b.lib` 형태로는
+    # ModuleNotFoundError가 나므로 from-import로 가져와야 한다.
+    from bitsandbytes.cextension import lib
+
+    return bool(lib.compiled_with_cuda)
+
+
+def _collect_env() -> dict:
+    """원인 분류용 환경 속성 (docs/contracts/canary-api.md의 `env`).
+
+    **부모가 아니라 자식이 읽는다.** 이 값들을 읽으려면 torch·bitsandbytes를
+    import해야 하는데, 진단 대상이 바로 "그 import가 죽는 환경"이다. 부모가 읽으면
+    원인을 확인하려다 CLI까지 함께 죽어 FR-03 격리가 무너진다 (Issue #19).
+
+    항목별로 독립적으로 실패할 수 있고, 실패한 항목만 None이 된다.
+    """
+    return {
+        "torch_version": _safe_read(_read_torch_version),
+        "torch_cuda_version": _safe_read(_read_torch_cuda_version),
+        "bnb_compiled_with_cuda": _safe_read(_read_bnb_compiled_with_cuda),
+        # CPU 기준선을 실제로 4bit으로 잴 수 있었는지. 4bit을 시도한 경우에만 채워지고,
+        # 시도조차 안 한 경우(GPU 쪽이 이미 폴백)는 None으로 남는다 — _run_basic_check 참고.
+        "bnb_cpu_4bit_supported": None,
+    }
+
+
+def _read_rss_mb():
+    """이 프로세스가 지금 물리 RAM에 올려둔 양(MB). 못 재면 None.
+
+    의존성을 늘리지 않으려고 OS API를 직접 부른다(`psutil` 없이). macOS 등 아래 두
+    경로가 없는 플랫폼에서는 None이며, MVP 지원 대상은 Linux·Windows다(NFR-01).
+
+    **실패를 0으로 적지 않는다** — 0은 "RAM을 안 쓰고 있었다"는 뜻이 되어, 사후에
+    사인을 좁히려고 이 값을 볼 때 정반대 결론으로 이끈다.
+    """
+    if sys.platform == "win32":
+        return _safe_read(_read_rss_mb_windows)
+    return _safe_read(_read_rss_mb_proc)
+
+
+class _ProcessMemoryCounters(ctypes.Structure):
+    """Windows PROCESS_MEMORY_COUNTERS. `WorkingSetSize`가 RSS에 해당한다."""
+
+    _fields_ = [
+        ("cb", ctypes.c_uint32),
+        ("PageFaultCount", ctypes.c_uint32),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+    ]
+
+
+def _read_rss_mb_windows():
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+
+    # restype을 지정하지 않으면 ctypes가 반환값을 int(32비트)로 해석해 64비트 핸들이
+    # 잘린다. 그러면 조회가 조용히 실패해 0이 나온다 — 반드시 포인터 크기로 받는다.
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    psapi.GetProcessMemoryInfo.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_ProcessMemoryCounters),
+        ctypes.c_uint32,
+    ]
+    psapi.GetProcessMemoryInfo.restype = ctypes.c_int
+
+    counters = _ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
+    if not psapi.GetProcessMemoryInfo(
+        kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+    ):
+        raise OSError(ctypes.get_last_error(), "GetProcessMemoryInfo 실패")
+    return counters.WorkingSetSize / (1024 * 1024)
+
+
+def _read_rss_mb_proc():
+    # /proc/self/statm의 두 번째 필드가 resident set(페이지 단위)이다.
+    with open("/proc/self/statm", encoding="ascii") as statm:
+        resident_pages = int(statm.read().split()[1])
+    return resident_pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+
+
+def _blank_result(status: str, error_log: str | None, env: dict | None = None) -> dict:
+    """측정값이 없는 실패 결과. 계약 스키마(docs/contracts/canary-api.md)를 채운다.
+
+    `rss_mb`는 **호출 시점에** 잰다. 사전 기록의 목적이 "죽기 직전 상태를 남기는 것"
+    이라, 마지막 한 번만 재면 정작 죽었을 때의 값이 남지 않는다 (Issue #27).
+
+    `env`는 인자로 받는다 — import 전 사전 기록에서 이 함수가 직접 수집하면 그
+    수집 과정(`import torch`)에서 죽어버려 사전 기록 자체가 불가능해진다.
+    """
     return {
         "status": status,
         "device": None,
@@ -118,6 +248,8 @@ def _blank_result(status: str, error_log: str | None) -> dict:
         "cpu_multiplier": None,
         "quant_backend": None,
         "error_log": error_log,
+        "env": env,
+        "rss_mb": _read_rss_mb(),
     }
 
 
@@ -150,13 +282,13 @@ def _is_oom(torch, exc: BaseException) -> bool:
     return oom_type is not None and isinstance(exc, oom_type)
 
 
-def _run(torch, spec: dict) -> dict:
+def _run(torch, spec: dict, env: dict) -> dict:
     model_name = spec.get("model_name")
     batch_size = int(spec.get("batch_size") or DEFAULT_BATCH_SIZE)
     seq_len = int(spec.get("seq_len") or DEFAULT_SEQ_LEN)
 
     if model_name is None:
-        return _run_basic_check(torch, batch_size, seq_len)
+        return _run_basic_check(torch, batch_size, seq_len, env)
 
     # `--model` 경로(FR-02)는 이인수의 W4가 build_dummy_model()을 채운 뒤 W9에서
     # 연결된다. 지금은 아래 호출이 NotImplementedError를 올리고 main()이 그것을
@@ -165,7 +297,7 @@ def _run(torch, spec: dict) -> dict:
     raise NotImplementedError("`--model` 경로는 아직 엔진에 연결되지 않았다 (WORKPLAN W4·W9).")
 
 
-def _run_basic_check(torch, batch_size: int, seq_len: int) -> dict:
+def _run_basic_check(torch, batch_size: int, seq_len: int, env: dict) -> dict:
     """기본 체크 — 모델과 무관하게 GPU/드라이버/CUDA 체인이 살아있는지 실측한다."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # CPU는 float16 연산 유닛이 사실상 없어 정상 경로인 float32로 돌린다
@@ -176,9 +308,16 @@ def _run_basic_check(torch, batch_size: int, seq_len: int) -> dict:
 
     cpu_multiplier = None
     if device == "cuda" and measured["elapsed_ms"]:
-        baseline_ms = _measure_cpu_baseline(torch, batch_size, seq_len, measured["quant_backend"])
+        tried_4bit = measured["quant_backend"] == QUANT_BACKEND_4BIT
+        baseline_ms, baseline_backend = _measure_cpu_baseline(
+            torch, batch_size, seq_len, tried_4bit
+        )
         if baseline_ms is not None:
             cpu_multiplier = baseline_ms / measured["elapsed_ms"]
+        # 4bit을 실제로 시도했을 때만 지원 여부를 말할 수 있다. GPU 쪽이 이미 폴백해
+        # CPU에서도 시도조차 안 했다면 "지원 안 됨"이 아니라 "모름"이므로 None으로 둔다.
+        if tried_4bit and baseline_backend is not None:
+            env["bnb_cpu_4bit_supported"] = baseline_backend == QUANT_BACKEND_4BIT
 
     return {
         "status": STATUS_OK,
@@ -188,28 +327,29 @@ def _run_basic_check(torch, batch_size: int, seq_len: int) -> dict:
         "cpu_multiplier": cpu_multiplier,
         "quant_backend": measured["quant_backend"],
         "error_log": None,
+        "env": env,
+        "rss_mb": _read_rss_mb(),
     }
 
 
-def _measure_cpu_baseline(torch, batch_size: int, seq_len: int, quant_backend: str):
-    """CPU 강제 폴백 실행 시간(ms). 측정에 실패하면 None을 돌려준다.
+def _measure_cpu_baseline(torch, batch_size: int, seq_len: int, prefer_4bit: bool):
+    """CPU 강제 폴백의 (실행 시간 ms, 실제로 쓰인 quant_backend).
 
     절대 시간은 GPU 세대마다 크게 달라 쓸 수 없으므로, 이 값 대비 몇 배 빠른가로
-    판정한다 (docs/adr/0003-relative-baseline-timing.md).
+    판정한다 (docs/adr/0003-relative-baseline-timing.md). 측정에 실패하면 (None, None).
+
+    backend를 함께 돌려주는 이유는, CPU 4bit이 `nn.Linear`보다 5.3배 느려서
+    (docs/architecture.md §6-01) 양쪽 backend가 어긋나면 배수 자체가 왜곡되기
+    때문이다 — 그 사실을 `env`에 남겨 원인 분류가 참고할 수 있게 한다.
     """
     try:
         baseline = _measure(
-            torch,
-            "cpu",
-            torch.float32,
-            batch_size,
-            seq_len,
-            prefer_4bit=quant_backend == QUANT_BACKEND_4BIT,
+            torch, "cpu", torch.float32, batch_size, seq_len, prefer_4bit=prefer_4bit
         )
     except Exception:  # noqa: BLE001 - 기준선 실패가 canary 실패로 번지면 안 된다
         # 기준선을 못 재는 것은 canary 자체의 실패가 아니다 — 배수만 포기한다.
-        return None
-    return baseline["elapsed_ms"]
+        return None, None
+    return baseline["elapsed_ms"], baseline["quant_backend"]
 
 
 def _measure(torch, device: str, dtype, batch_size: int, seq_len: int, prefer_4bit: bool = True):

@@ -49,4 +49,5 @@
 - **부모 코드에서 OS별 분기가 사라진다.** exit code를 해석하지 않으므로 Linux/Windows 차이가 설계 수준에서 무의미해진다(NFR-01).
 - 결과 파일 쓰기가 3회로 늘지만, 파일은 수백 바이트고 canary 실행 시간은 torch import 오버헤드(3~10초, [architecture.md](../architecture.md) §6-03)가 지배하므로 무시할 수준이다.
 - **한계**: 사전 기록은 "어느 **단계**에서 죽었는지"만 알려준다. 실행 단계에서 프로세스가 통째로 죽은 경우, 원인이 호스트 RAM 부족인지 드라이버 크래시인지 구분되지 않아 `oom`으로 확정하지 못하고 `error`가 된다. 추측해서 `oom`이라고 적으면 사용자에게 batch를 줄이라는 엉뚱한 안내가 나가므로, 모르는 것은 모른다고 둔다. MVP에서 실제로 마주칠 VRAM 부족은 대부분 `torch.cuda.OutOfMemoryError` 예외로 잡히는 쪽이다.
+  - 이 한계는 [ADR-0006](0006-ram-recorded-internally-only.md)이 **일부** 좁힌다 — 사전 기록마다 그 시점의 RSS(`rss_mb`)를 함께 남겨, 값이 낮으면 호스트 RAM 부족을 **배제**할 수 있다. 다만 값이 높다고 RAM 부족이 확정되는 것은 아니므로 `error`를 `oom`으로 바꾸지는 않는다.
 - 이 기법은 `canary/worker.py` 안에 캡슐화된다 — 계약([contracts/canary-api.md](../contracts/canary-api.md))의 `status` 값은 그대로다.

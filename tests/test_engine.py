@@ -21,6 +21,13 @@ _OK_PAYLOAD = {
     "cpu_multiplier": 41.0,
     "quant_backend": "bnb-4bit",
     "error_log": None,
+    "env": {
+        "torch_version": "2.11.0+cu128",
+        "torch_cuda_version": "12.8",
+        "bnb_compiled_with_cuda": True,
+        "bnb_cpu_4bit_supported": True,
+    },
+    "rss_mb": 1234.5,
 }
 
 
@@ -297,3 +304,112 @@ def test_write_result_leaves_no_temp_file(tmp_path) -> None:
 
     assert result_path.exists()
     assert list(tmp_path.iterdir()) == [result_path]
+
+
+# ── 환경 속성 공급 (#19) ─────────────────────────────────────────────────────
+
+_ENV_FIELDS = {
+    "torch_version",
+    "torch_cuda_version",
+    "bnb_compiled_with_cuda",
+    "bnb_cpu_4bit_supported",
+}
+
+
+def test_env_is_supplied_even_when_import_fails(fake_module) -> None:
+    """import가 깨진 환경에서도 `env`가 dict로 온다.
+
+    이 필드의 존재 이유가 **바로 그 환경의 원인을 좁히는 것**이라, import 실패 시
+    비어버리면 만든 의미가 없다. 못 읽은 항목만 None이고 형태는 유지된다.
+    """
+    fake_module("torch", 'raise ImportError("libcudart.so.12: cannot open shared object file")')
+
+    result = run_canary_check(None, 1, 8)
+
+    assert result["status"] == "import_crash"
+    assert set(result["env"]) == _ENV_FIELDS
+    assert result["env"]["torch_version"] is None
+
+
+def test_non_dict_env_is_normalized_to_none(monkeypatch) -> None:
+    """`env` 자리에 dict가 아닌 값이 오면 없는 것으로 본다.
+
+    소비자(causes.py)가 곧바로 `.get()`으로 파고드는 자리라, 문자열 같은 게 흘러들면
+    부모가 그 자리에서 죽는다.
+    """
+    monkeypatch.setattr(
+        engine.subprocess, "run", _fake_worker({"status": "ok", "env": "이상한 값"})
+    )
+
+    result = run_canary_check(None, 1, 8)
+
+    assert result["env"] is None
+
+
+@requires_cuda
+def test_env_is_populated_on_real_run() -> None:
+    """실제 실행에서 환경 속성이 채워지는지 확인한다."""
+    result = run_canary_check(None, 1, 8)
+
+    assert result["status"] == "ok", result["error_log"]
+    env = result["env"]
+    assert set(env) == _ENV_FIELDS
+    assert env["torch_version"]
+    assert env["bnb_compiled_with_cuda"] in (True, False)
+    # 4bit을 시도조차 안 한 경우는 "지원 안 됨"이 아니라 "모름"이라 None으로 남는다.
+    if result["quant_backend"] == "bnb-4bit":
+        assert env["bnb_cpu_4bit_supported"] in (True, False)
+    else:
+        assert env["bnb_cpu_4bit_supported"] is None
+
+
+# ── 사전 기록 RSS (#27) ──────────────────────────────────────────────────────
+
+
+def test_read_rss_mb_returns_positive_value() -> None:
+    """지금 이 프로세스의 RSS를 실제로 잰다 (psutil 없이 OS API 직접 호출)."""
+    value = worker._read_rss_mb()
+
+    assert value is not None
+    assert value > 0
+
+
+def test_read_rss_mb_returns_none_on_failure(monkeypatch) -> None:
+    """측정 실패는 0이 아니라 None이다.
+
+    0은 "RAM을 안 쓰고 있었다"는 뜻이 되어, 사후에 사인을 좁히려고 이 값을 볼 때
+    정반대 결론으로 이끈다.
+    """
+
+    def boom():
+        raise OSError("측정 실패")
+
+    monkeypatch.setattr(worker, "_read_rss_mb_windows", boom)
+    monkeypatch.setattr(worker, "_read_rss_mb_proc", boom)
+
+    assert worker._read_rss_mb() is None
+
+
+def test_rss_survives_process_death_without_exception(fake_module) -> None:
+    """예외 없이 즉사해도 **미리 써둔** RSS가 살아남는다 — 이게 이 필드의 목적이다.
+
+    최종 결과에만 RSS를 넣으면 정작 죽었을 때는 아무것도 안 남는다. 사전 기록
+    시점마다 다시 재기 때문에 마지막 기록에 "죽기 직전 값"이 들어있다.
+    """
+    fake_module("torch", "import ctypes\nctypes.string_at(0)\n")
+
+    result = run_canary_check(None, 1, 8)
+
+    assert result["status"] == "import_crash", result["error_log"]
+    assert result["rss_mb"] is not None
+    assert result["rss_mb"] > 0
+
+
+def test_rss_is_recorded_on_normal_completion(fake_module) -> None:
+    """정상 완료 경로에서도 값이 남는다 (import 실패 경로와 별개 지점)."""
+    fake_module("torch", 'raise ImportError("no torch")')
+
+    result = run_canary_check(None, 1, 8)
+
+    assert result["rss_mb"] is not None
+    assert result["rss_mb"] > 0
