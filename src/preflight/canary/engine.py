@@ -25,7 +25,7 @@ RESULT_FIELDS = (
     "quant_backend",
     "error_log",
     "env",
-    "rss_mb",
+    "rss_peak_mb",
 )
 
 VALID_STATUSES = ("ok", "oom", "import_crash", "error")

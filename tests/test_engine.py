@@ -6,6 +6,7 @@
 
 import json
 import subprocess
+import sys
 
 import pytest
 
@@ -27,7 +28,7 @@ _OK_PAYLOAD = {
         "bnb_compiled_with_cuda": True,
         "bnb_cpu_4bit_supported": True,
     },
-    "rss_mb": 1234.5,
+    "rss_peak_mb": 1234.5,
 }
 
 
@@ -158,18 +159,21 @@ def test_import_crash_is_normalized(fake_module) -> None:
 @pytest.mark.parametrize(
     ("how", "source"),
     [
-        # 널 포인터 역참조 — .so 로드 실패와 같은 유형의 진짜 네이티브 크래시
+        # 널 포인터 역참조. **Linux에서만** SIGSEGV로 즉사하고, Windows에서는
+        # ctypes가 잡아 OSError로 바꾸므로 except 경로를 탄다 — 그래서 이 파라미터
+        # 하나만으로는 사전 기록 생존을 검증할 수 없다(아래 os._exit이 그 역할).
         ("segfault", "import ctypes\nctypes.string_at(0)\n"),
-        # 파이썬 정리 절차를 전혀 안 거치는 즉시 종료
+        # 파이썬 정리 절차를 전혀 안 거치는 즉시 종료 — 두 OS 모두에서 진짜 즉사다
         ("os._exit", "import os\nos._exit(1)\n"),
     ],
 )
 def test_process_death_during_import_is_import_crash(fake_module, how, source) -> None:
-    """예외조차 못 남기고 죽어도 import_crash로 잡힌다.
+    """자식이 어떤 식으로 죽든 import_crash로 잡힌다.
 
-    이런 죽음에는 `except`도 `finally`도 돌지 않아서 "죽은 뒤 기록"이 불가능하다.
-    자식이 **미리 써둔** 결과가 살아남아야 하고, 부모는 exit code를 해석하지 않는다
-    (같은 크래시가 Linux는 -11, Windows는 0xC0000005로 나타난다 — NFR-01).
+    부모는 exit code를 해석하지 않는다 — 같은 크래시가 Linux는 -11, Windows는
+    0xC0000005로 나타나기 때문이다(NFR-01). 두 파라미터는 죽는 방식이 다르다:
+    `os._exit`은 `except`도 `finally`도 못 돌아 **미리 써둔** 결과가 답이 되고,
+    `string_at(0)`은 OS에 따라 예외로 잡히기도 한다. 어느 쪽이든 결과는 같아야 한다.
     """
     fake_module("torch", source)
 
@@ -347,7 +351,7 @@ def test_env_and_rss_are_populated_on_real_run() -> None:
     result = run_canary_check(None, 1, 8)
 
     assert result["status"] == "ok", result["error_log"]
-    assert result["rss_mb"] > 0
+    assert result["rss_peak_mb"] > 0
     env = result["env"]
     assert set(env) == _ENV_FIELDS
     assert env["torch_version"]
@@ -362,40 +366,45 @@ def test_env_and_rss_are_populated_on_real_run() -> None:
 # ── 사전 기록 RSS (#27) ──────────────────────────────────────────────────────
 
 
-def test_read_rss_mb_returns_positive_value() -> None:
-    """지금 이 프로세스의 RSS를 실제로 잰다 (psutil 없이 OS API 직접 호출)."""
-    value = worker._read_rss_mb()
+@pytest.mark.skipif(
+    sys.platform not in ("win32", "linux"),
+    reason="RSS 조회 경로가 Windows·Linux만 있다 (NFR-01). 그 외 플랫폼은 None이 정상이다.",
+)
+def test_read_rss_peak_mb_returns_positive_value() -> None:
+    """지금 이 프로세스의 RSS 최고점을 실제로 잰다 (psutil 없이 OS API 직접 호출)."""
+    value = worker._read_rss_peak_mb()
 
     assert value is not None
     assert value > 0
 
 
-def test_read_rss_mb_returns_none_on_failure(monkeypatch) -> None:
+def test_read_rss_peak_mb_returns_none_on_failure(monkeypatch) -> None:
     """측정 실패는 0이 아니라 None이다.
 
-    0은 "RAM을 안 쓰고 있었다"는 뜻이 되어, 사후에 사인을 좁히려고 이 값을 볼 때
-    정반대 결론으로 이끈다.
+    0은 "RAM을 안 썼다"는 뜻이 되어, 사후에 사인을 좁히려고 이 값을 볼 때 정반대
+    결론으로 이끈다.
     """
 
     def boom():
         raise OSError("측정 실패")
 
-    monkeypatch.setattr(worker, "_read_rss_mb_windows", boom)
-    monkeypatch.setattr(worker, "_read_rss_mb_proc", boom)
+    monkeypatch.setattr(worker, "_read_rss_peak_mb_windows", boom)
+    monkeypatch.setattr(worker, "_read_rss_peak_mb_proc", boom)
 
-    assert worker._read_rss_mb() is None
+    assert worker._read_rss_peak_mb() is None
 
 
 def test_rss_survives_process_death_without_exception(fake_module) -> None:
     """예외 없이 즉사해도 **미리 써둔** RSS가 살아남는다 — 이게 이 필드의 목적이다.
 
-    최종 결과에만 RSS를 넣으면 정작 죽었을 때는 아무것도 안 남는다. 사전 기록
-    시점마다 다시 재기 때문에 마지막 기록에 "죽기 직전 값"이 들어있다.
+    `os._exit()`을 쓴다 — 파이썬 정리 절차를 전혀 안 거치는 진짜 즉사다.
+    `ctypes.string_at(0)`은 Linux에서는 SIGSEGV지만 **Windows에서는 잡히는
+    OSError**라, 그걸 쓰면 사전 기록 경로가 아니라 `except` 경로를 테스트하게 된다.
     """
-    fake_module("torch", "import ctypes\nctypes.string_at(0)\n")
+    fake_module("torch", "import os\nos._exit(1)\n")
 
     result = run_canary_check(None, 1, 8)
 
     assert result["status"] == "import_crash", result["error_log"]
-    assert result["rss_mb"] is not None
-    assert result["rss_mb"] > 0
+    assert result["rss_peak_mb"] is not None
+    assert result["rss_peak_mb"] > 0

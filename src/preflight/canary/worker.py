@@ -58,14 +58,19 @@ def main() -> None:
     spec_path, result_path = sys.argv[1], sys.argv[2]
 
     # 죽기 전에 미리 기록한다. 지금부터 import를 통과하기 전까지 프로세스가 즉사하면
-    # 이 결과가 그대로 부모에게 읽힌다.
-    _write_result(result_path, _blank_result(STATUS_IMPORT_CRASH, _PREWRITE_IMPORT_NOTE))
+    # 이 결과가 그대로 부모에게 읽힌다. 아직 아무것도 못 읽었지만 `env`는 골격을
+    # 넘긴다 — 계약이 "어느 경우에도 키는 있다"고 약속하기 때문이다(canary-api.md).
+    _write_result(
+        result_path, _blank_result(STATUS_IMPORT_CRASH, _PREWRITE_IMPORT_NOTE, _empty_env())
+    )
 
     try:
         with open(spec_path, encoding="utf-8") as spec_file:
             spec = json.load(spec_file)
     except Exception:  # noqa: BLE001 - spec을 못 읽는 것도 진단 결과로 포장한다
-        _write_result(result_path, _blank_result(STATUS_ERROR, traceback.format_exc()))
+        _write_result(
+            result_path, _blank_result(STATUS_ERROR, traceback.format_exc(), _empty_env())
+        )
         return
 
     try:
@@ -188,22 +193,27 @@ def _collect_env() -> dict:
     return env
 
 
-def _read_rss_mb():
-    """이 프로세스가 지금 물리 RAM에 올려둔 양(MB). 못 재면 None.
+def _read_rss_peak_mb():
+    """이 프로세스가 지금까지 물리 RAM에 올려둔 **최고점**(MB). 못 재면 None.
+
+    현재값이 아니라 최고점을 쓴다. 이 값을 보는 시점은 사후(프로세스가 죽은 뒤)라
+    "지금 얼마나 쓰고 있나"는 의미가 없고, **"여태 얼마까지 썼었나"** 가 원인을
+    좁힌다. 커널이 최고점을 대신 기록해주므로 우리가 주기적으로 샘플링할 필요도 없다
+    — torch import처럼 잠깐 치솟았다 내려가는 구간도 그대로 남는다.
 
     의존성을 늘리지 않으려고 OS API를 직접 부른다(`psutil` 없이). macOS 등 아래 두
     경로가 없는 플랫폼에서는 None이며, MVP 지원 대상은 Linux·Windows다(NFR-01).
 
-    **실패를 0으로 적지 않는다** — 0은 "RAM을 안 쓰고 있었다"는 뜻이 되어, 사후에
-    사인을 좁히려고 이 값을 볼 때 정반대 결론으로 이끈다.
+    **실패를 0으로 적지 않는다** — 0은 "RAM을 안 썼다"는 뜻이 되어, 사후에 사인을
+    좁히려고 이 값을 볼 때 정반대 결론으로 이끈다.
     """
     if sys.platform == "win32":
-        return _safe_read(_read_rss_mb_windows)
-    return _safe_read(_read_rss_mb_proc)
+        return _safe_read(_read_rss_peak_mb_windows)
+    return _safe_read(_read_rss_peak_mb_proc)
 
 
 class _ProcessMemoryCounters(ctypes.Structure):
-    """Windows PROCESS_MEMORY_COUNTERS. `WorkingSetSize`가 RSS에 해당한다."""
+    """Windows PROCESS_MEMORY_COUNTERS. `PeakWorkingSetSize`가 RSS 최고점이다."""
 
     _fields_ = [
         ("cb", ctypes.c_uint32),
@@ -219,7 +229,7 @@ class _ProcessMemoryCounters(ctypes.Structure):
     ]
 
 
-def _read_rss_mb_windows():
+def _read_rss_peak_mb_windows():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     psapi = ctypes.WinDLL("psapi", use_last_error=True)
 
@@ -240,21 +250,25 @@ def _read_rss_mb_windows():
         kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
     ):
         raise OSError(ctypes.get_last_error(), "GetProcessMemoryInfo 실패")
-    return counters.WorkingSetSize / (1024 * 1024)
+    return counters.PeakWorkingSetSize / (1024 * 1024)
 
 
-def _read_rss_mb_proc():
-    # /proc/self/statm의 두 번째 필드가 resident set(페이지 단위)이다.
-    with open("/proc/self/statm", encoding="ascii") as statm:
-        resident_pages = int(statm.read().split()[1])
-    return resident_pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+def _read_rss_peak_mb_proc():
+    # /proc/self/status의 VmHWM이 resident set의 최고점(high water mark)이다.
+    # /proc/self/statm에는 현재값만 있고 최고점이 없어 이쪽을 쓴다.
+    with open("/proc/self/status", encoding="ascii") as status:
+        for line in status:
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1]) / 1024  # kB → MB
+    raise OSError("/proc/self/status에 VmHWM 항목이 없다")
 
 
 def _blank_result(status: str, error_log: str | None, env: dict | None = None) -> dict:
     """측정값이 없는 실패 결과. 계약 스키마(docs/contracts/canary-api.md)를 채운다.
 
-    `rss_mb`는 **호출 시점에** 잰다. 사전 기록의 목적이 "죽기 직전 상태를 남기는 것"
-    이라, 마지막 한 번만 재면 정작 죽었을 때의 값이 남지 않는다 (Issue #27).
+    `rss_peak_mb`는 **호출 시점에** 잰다. 사전 기록의 목적이 죽었을 때 상태를 남기는
+    것이라, 마지막 한 번만 재면 정작 죽었을 때의 값이 남지 않는다 (Issue #27).
+    최고점이라 이전 단계의 급증도 함께 실린다.
 
     `env`는 인자로 받는다 — import 전 사전 기록에서 이 함수가 직접 수집하면 그
     수집 과정(`import torch`)에서 죽어버려 사전 기록 자체가 불가능해진다.
@@ -268,7 +282,7 @@ def _blank_result(status: str, error_log: str | None, env: dict | None = None) -
         "quant_backend": None,
         "error_log": error_log,
         "env": env,
-        "rss_mb": _read_rss_mb(),
+        "rss_peak_mb": _read_rss_peak_mb(),
     }
 
 
@@ -347,7 +361,7 @@ def _run_basic_check(torch, batch_size: int, seq_len: int, env: dict) -> dict:
         "quant_backend": measured["quant_backend"],
         "error_log": None,
         "env": env,
-        "rss_mb": _read_rss_mb(),
+        "rss_peak_mb": _read_rss_peak_mb(),
     }
 
 
