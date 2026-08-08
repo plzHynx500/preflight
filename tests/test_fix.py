@@ -82,6 +82,58 @@ def test_classify_and_suggest_4bit_cpu_other() -> None:
     assert fix["fix_command"] is None
 
 
+def test_suggest_fix_never_imports_bitsandbytes(monkeypatch) -> None:
+    """부모 프로세스는 bitsandbytes를 import하지 않는다 (#24, ADR-0002).
+
+    원인 확인이 가장 필요한 상황("bitsandbytes import가 죽는 환경")이 곧 그 import가
+    가장 위험한 상황이다. `.so` 로드 실패는 파이썬 예외가 아니라 SIGSEGV로 나므로
+    `try/except`로도 막히지 않는다 — 아예 부르지 않아야 한다.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def forbid_bitsandbytes(name, *args, **kwargs):
+        if name.split(".")[0] == "bitsandbytes":
+            raise AssertionError(f"부모 프로세스가 {name}을(를) import했다")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", forbid_bitsandbytes)
+
+    fix = suggest_fix(
+        {
+            "status": "ok",
+            "device": "cpu",
+            "quant_backend": "bnb-4bit",
+            "verdict": "FAIL",
+            "reasons": ["quant_layer_device_cpu"],
+            "env": {"bnb_compiled_with_cuda": False},
+        }
+    )
+
+    assert fix is not None
+    assert fix["cause"] == "bnb_not_compiled_with_cuda"
+
+
+def test_suggest_fix_does_not_mutate_input() -> None:
+    """진단 결과에 원인 조회용 값을 몰래 심지 않는다.
+
+    예전에는 `check_result["compiled_with_cuda"]`를 직접 채워 넣었는데, 조회 함수가
+    입력을 바꾸면 `--json` 출력에 canary가 재지 않은 필드가 섞여 나간다.
+    """
+    check_result = {
+        "status": "oom",
+        "verdict": "FAIL",
+        "reasons": ["status_oom"],
+        "env": {"bnb_compiled_with_cuda": True},
+    }
+    before = {**check_result, "env": dict(check_result["env"])}
+
+    suggest_fix(check_result)
+
+    assert check_result == before
+
+
 def test_classify_falls_back_when_env_is_missing() -> None:
     """`env`를 못 받은 경우(구버전 canary·수집 실패)에도 분류가 죽지 않는다.
 
