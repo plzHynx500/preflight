@@ -118,10 +118,27 @@ MVP 범위 밖이라 `device_index=0`(기본 GPU)만 본다.
 
 **`judge_result`로 넘기는 방법**: `run_canary_check()`의 7개 필드 반환 스키마 자체에는
 포함되지 않는다 — 호출한 쪽(cli.py, W12)이 `query_gpu_state()`를 별도로 불러
-`raw["env"] = {"gpu_free_mb": state["free_mb"]}` 형태로 병합한 뒤 `judge_result()`에
-넘긴다. "canary를 돌리지 않고도 알 수 있으면 `env`, 돌려야만 알 수 있으면 최상위"가
-이 필드 배치를 가르는 기준이다(2026-08-06 회의 안건 2, `compiled_with_cuda` 등 다른
-`env` 후보 필드와 동일한 원칙). `env`가 없거나 `env.gpu_free_mb`가 없으면(NVML 조회
+`env`에 `gpu_free_mb`·`gpu_total_mb`(둘 다 MB) 두 값을 병합한 뒤 `judge_result()`에
+넘긴다. `gpu_total_mb`는 화면(report.py `_vram_line`)이 "X.XGB / Y.YGB 가용 (총
+Z.ZGB)"를 판정과 같은 숫자로 보여주는 데 쓰인다.
+
+```python
+raw["env"] = {**(raw.get("env") or {}), "gpu_free_mb": state["free_mb"], "gpu_total_mb": state["total_mb"]}
+```
+
+**반드시 병합이어야 한다 — 대입(`raw["env"] = {...}`)이 아니다.** `env`는 자식(canary,
+#19)과 부모(cli.py, 이 절)가 함께 채워 넣는 칸이다. 대입하면 자식이 먼저 채워둔 값
+(`torch_version`·`bnb_compiled_with_cuda` 등)이 통째로 사라진다. `raw.get("env") or {}`가
+자식이 아예 못 채운 경우(`env` 키가 있어도 값이 `None`인 경우 — subprocess 기동 실패·
+타임아웃·자식이 결과 없이 죽은 경우 전부 `_normalize()`가 `env`를 `None`으로 채운다)까지
+포함해 처리한다. `raw.setdefault("env", {}).update(...)`는 **틀린 형태다** — `setdefault`는
+키가 "있는지"만 보는데 `_normalize()`가 항상 모든 필드를 키로 만들어두므로, `env`가
+`None`인 채로 키만 있으면 `setdefault`가 그 `None`을 그대로 돌려주고 `.update()`가
+`AttributeError`로 부모 프로세스를 죽인다 — 하필 `import_crash`처럼 `env`가 비는 바로 그
+상황에서(ADR-0002가 막으려던 것과 같은 종류의 실패). 이 절이 실측(PR #26 리뷰, 상영님
+지적)으로 정정된 이력이다.
+
+`env`가 없거나 `env.gpu_free_mb`가 없으면(NVML 조회
 실패 등) `judge_result`는 관련 WARN 판정을 조용히 건너뛴다 — 필수 입력이 아니다.
 
 ## `judge_result`
