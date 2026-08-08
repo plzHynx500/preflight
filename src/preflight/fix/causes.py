@@ -38,7 +38,11 @@ def classify_cause(check_result: dict) -> str:
         check_result.get("quant_backend") == "bnb-4bit" and check_result.get("device") == "cpu"
     )
     if is_cpu_fallback:
-        if check_result.get("compiled_with_cuda") is False:
+        # canary 자식이 채워 보낸 환경 속성을 읽는다 (Issue #19). 부모가 직접
+        # `import bitsandbytes`로 확인하면, 진단 대상인 "bnb import가 죽는 환경"에서
+        # CLI까지 함께 죽어 FR-03 격리가 무너진다.
+        env = check_result.get("env") or {}
+        if env.get("bnb_compiled_with_cuda") is False:
             return "bnb_not_compiled_with_cuda"
         return "4bit_cpu_fallback_other"
 

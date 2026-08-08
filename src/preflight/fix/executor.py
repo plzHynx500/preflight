@@ -68,17 +68,16 @@ _FIX_MAP: dict[str, dict[str, str | None]] = {
 
 
 def suggest_fix(check_result: dict) -> dict | None:
-    """실행하지 않는다 — 명령어 텍스트만 반환. verdict가 PASS면 None."""
+    """실행하지 않는다 — 명령어 텍스트만 반환. verdict가 PASS면 None.
+
+    **여기서 bitsandbytes를 import하지 않는다** (Issue #24). 이 함수는 부모
+    프로세스에서 도는데, 원인 확인이 가장 필요한 상황이 곧 그 import가 가장
+    위험한 상황이다 — `.so` 로드 실패는 파이썬 예외가 아니라 SIGSEGV로 나므로
+    `try/except`로 막을 수도 없다. 자식이 `env`에 실어 보낸 값을 읽는다
+    (ADR-0002, canary-api.md의 `env` 절).
+    """
     if check_result.get("verdict") == "PASS":
         return None
-
-    if "compiled_with_cuda" not in check_result:
-        try:
-            import bitsandbytes.cextension.lib as bnb_lib
-
-            check_result["compiled_with_cuda"] = getattr(bnb_lib, "compiled_with_cuda", False)
-        except (ImportError, AttributeError):
-            check_result["compiled_with_cuda"] = False
 
     cause = classify_cause(check_result)
     if cause == "pass":

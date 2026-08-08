@@ -36,14 +36,14 @@ def test_classify_and_suggest_bnb_not_compiled() -> None:
     assert fix1["cause"] == "bnb_not_compiled_with_cuda"
     assert fix1["fix_command"] == "pip install bitsandbytes --upgrade --force-reinstall"
 
-    # case 2: 4bit cpu fallback with compiled_with_cuda=False
+    # case 2: 4bit cpu fallback — canary 자식이 채워 보낸 env로 판별한다 (#19)
     res2 = {
         "status": "ok",
         "device": "cpu",
         "quant_backend": "bnb-4bit",
         "verdict": "FAIL",
         "reasons": ["quant_layer_device_cpu"],
-        "compiled_with_cuda": False,
+        "env": {"bnb_compiled_with_cuda": False},
     }
     assert classify_cause(res2) == "bnb_not_compiled_with_cuda"
     fix2 = suggest_fix(res2)
@@ -73,13 +73,83 @@ def test_classify_and_suggest_4bit_cpu_other() -> None:
         "quant_backend": "bnb-4bit",
         "verdict": "FAIL",
         "reasons": ["quant_layer_device_cpu"],
-        "compiled_with_cuda": True,
+        "env": {"bnb_compiled_with_cuda": True},
     }
     assert classify_cause(res) == "4bit_cpu_fallback_other"
     fix = suggest_fix(res)
     assert fix is not None
     assert fix["cause"] == "4bit_cpu_fallback_other"
     assert fix["fix_command"] is None
+
+
+def test_suggest_fix_never_imports_bitsandbytes(monkeypatch) -> None:
+    """부모 프로세스는 bitsandbytes를 import하지 않는다 (#24, ADR-0002).
+
+    원인 확인이 가장 필요한 상황("bitsandbytes import가 죽는 환경")이 곧 그 import가
+    가장 위험한 상황이다. `.so` 로드 실패는 파이썬 예외가 아니라 SIGSEGV로 나므로
+    `try/except`로도 막히지 않는다 — 아예 부르지 않아야 한다.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def forbid_bitsandbytes(name, *args, **kwargs):
+        if name.split(".")[0] == "bitsandbytes":
+            raise AssertionError(f"부모 프로세스가 {name}을(를) import했다")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", forbid_bitsandbytes)
+
+    fix = suggest_fix(
+        {
+            "status": "ok",
+            "device": "cpu",
+            "quant_backend": "bnb-4bit",
+            "verdict": "FAIL",
+            "reasons": ["quant_layer_device_cpu"],
+            "env": {"bnb_compiled_with_cuda": False},
+        }
+    )
+
+    assert fix is not None
+    assert fix["cause"] == "bnb_not_compiled_with_cuda"
+
+
+def test_suggest_fix_does_not_mutate_input() -> None:
+    """진단 결과에 원인 조회용 값을 몰래 심지 않는다.
+
+    예전에는 `check_result["compiled_with_cuda"]`를 직접 채워 넣었는데, 조회 함수가
+    입력을 바꾸면 `--json` 출력에 canary가 재지 않은 필드가 섞여 나간다.
+    """
+    check_result = {
+        "status": "oom",
+        "verdict": "FAIL",
+        "reasons": ["status_oom"],
+        "env": {"bnb_compiled_with_cuda": True},
+    }
+    before = {**check_result, "env": dict(check_result["env"])}
+
+    suggest_fix(check_result)
+
+    assert check_result == before
+
+
+def test_classify_falls_back_when_env_is_missing() -> None:
+    """`env`를 못 받은 경우(구버전 canary·수집 실패)에도 분류가 죽지 않는다.
+
+    "CUDA 지원 없이 빌드됨"을 **모르는 것**과 **아닌 것**은 다르다. 모를 때 재설치
+    명령을 띄우면, bitsandbytes가 멀쩡한 사용자에게 엉뚱한 조치를 안내하게 된다.
+    """
+    base = {
+        "status": "ok",
+        "device": "cpu",
+        "quant_backend": "bnb-4bit",
+        "verdict": "FAIL",
+        "reasons": ["quant_layer_device_cpu"],
+    }
+    for env in (None, {}, {"bnb_compiled_with_cuda": None}):
+        assert classify_cause({**base, "env": env}) == "4bit_cpu_fallback_other", env
+    assert classify_cause(base) == "4bit_cpu_fallback_other"
 
 
 def test_classify_and_suggest_oom() -> None:

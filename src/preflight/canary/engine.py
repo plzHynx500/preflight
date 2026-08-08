@@ -24,6 +24,8 @@ RESULT_FIELDS = (
     "cpu_multiplier",
     "quant_backend",
     "error_log",
+    "env",
+    "rss_peak_mb",
 )
 
 VALID_STATUSES = ("ok", "oom", "import_crash", "error")
@@ -116,6 +118,10 @@ def _crash_log(completed: subprocess.CompletedProcess) -> str:
 def _normalize(raw: dict) -> dict:
     """자식이 준 값을 계약 스키마에 정확히 맞춘다 — 필드가 넘치지도 모자라지도 않게."""
     result = {field: raw.get(field) for field in RESULT_FIELDS}
+    # `env`는 소비자(causes.py 등)가 곧바로 .get()으로 파고드는 자리라, dict가 아닌
+    # 값이 흘러들면 부모가 그 자리에서 죽는다. 타입이 어긋나면 없는 것으로 본다.
+    if not isinstance(result["env"], dict):
+        result["env"] = None
     if result["status"] not in VALID_STATUSES:
         result["error_log"] = "예상치 못한 status: {!r}\n{}".format(
             result["status"], result["error_log"] or ""
