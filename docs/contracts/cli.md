@@ -48,6 +48,37 @@ $ preflight check --model meta-llama/Llama-3.1-8B --batch-size 2 --seq-len 2048
 1개 모델 확인 · 문제 없음 · 소요 시간 18초
 ```
 
+`--json`은 사람이 읽는 위 출력 대신, 다른 도구가 파싱하기 쉬운 아래 구조를 표준출력에 그대로 찍는다(`print()`로 출력 — 파이핑 시 색상 코드 등이 섞이지 않는다). `results`는 `judge_result()` 출력(및 있다면 `suggest_fix()` 결과를 병합한 `"fix"` 키)을 가공 없이 그대로 담고, `summary`는 위 요약 줄과 동일한 집계다. `exit_code_hint`는 WARN·FAIL 유무를 미리 계산해둔 참고값일 뿐 — 실제 종료 코드는 CLI 진입점이 결정한다.
+
+> `summary.total_items`는 `results` 배열의 원소 개수가 아니라, 텍스트 모드에서 찍히는 항목 줄 개수(위 기본 체크 예시의 "3개 항목")와 같은 값이다 — 아래 예시는 canary 실행 1건(`results` 원소 1개)에서 status·실행시간·quant 세 줄이 나오는 경우라 `total_items`가 3이다.
+
+```
+$ preflight check --json
+
+{
+  "results": [
+    {
+      "status": "ok",
+      "device": "cpu",
+      "memory_delta_mb": 130.7,
+      "elapsed_ms": 1.8,
+      "cpu_multiplier": 19.0,
+      "quant_backend": "bnb-4bit",
+      "error_log": null,
+      "verdict": "FAIL",
+      "reasons": ["quant_layer_device_cpu"],
+      "fix": {
+        "cause": "bnb_not_compiled_with_cuda",
+        "message": "bitsandbytes가 CUDA 지원 없이 빌드됨",
+        "fix_command": "pip install bitsandbytes --upgrade --force-reinstall"
+      }
+    }
+  ],
+  "summary": { "total_items": 3, "pass": 2, "warn": 0, "fail": 1, "elapsed_seconds": 4.0 },
+  "exit_code_hint": 1
+}
+```
+
 ## 관련 문서
 
 - 내부 모듈 간 API 계약: [canary-api.md](canary-api.md)
