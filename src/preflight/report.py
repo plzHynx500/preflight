@@ -18,7 +18,7 @@ _REASON_MESSAGES: dict[str, str] = {
         "구버전 bitsandbytes 등으로 4bit 레이어 구성 실패 → nn.Linear로 대체 실행됨"
         " (device=cpu 판정 생략)"
     ),
-    "memory_delta_high": "메모리 사용량이 예측 대비 15% 이상 벗어남",
+    "memory_delta_high": "canary 실행만으로 가용 VRAM의 90% 이상을 소모 — 실제 학습 시 OOM 위험 높음",
     "cpu_multiplier_low": "CPU 대비 실행 속도가 2배 미만 (성능 저하 가능성)",
 }
 
@@ -82,14 +82,55 @@ def _timing_line(result: dict) -> _Line:
 
 
 def _vram_line(result: dict) -> _Line:
+    """canary가 실제로 옮긴 메모리량과, judge_result가 WARN 판정에 쓴 것과
+    "같은" 가용/총 VRAM 숫자를 함께 보여준다.
+
+    이전에는 최상위 `total_vram_gb`(GB)를 찾았는데 아무도 채워주지 않아 항상
+    None이었고, 설상가상 채워졌더라도 judge_result가 WARN 판정에 쓰는 숫자는
+    `env.gpu_free_mb`(MB, free 기준)라서 화면(total 기준)과 판정(free 기준)이
+    서로 다른 숫자를 썼다 — WARN이 떠도 "12GB 중 8.4GB인데 왜 경고?"처럼
+    화면만 봐서는 이유를 알 수 없는 문제가 있었다(PR #26 리뷰, 상영님 지적).
+    이제 cli.py가 병합해줄 `env.gpu_free_mb`/`env.gpu_total_mb`(둘 다 MB)를
+    그대로 읽어, 판정에 쓴 숫자와 화면 숫자를 일치시킨다.
+    """
     memory_delta_mb = result.get("memory_delta_mb")
-    detail = (
-        f"{memory_delta_mb / 1024:.1f}GB 사용" if memory_delta_mb is not None else "측정값 없음"
-    )
-    total_vram_gb = result.get("total_vram_gb")
-    if total_vram_gb is not None and memory_delta_mb is not None:
-        detail = f"{memory_delta_mb / 1024:.1f}GB / {total_vram_gb:.0f}GB 가용"
+    if memory_delta_mb is None:
+        return _Line("✔", "green", "VRAM 실측    측정값 없음")
+
+    memory_delta_gb = memory_delta_mb / 1024
+    env = result.get("env") or {}
+    free_mb = env.get("gpu_free_mb")
+    total_mb = env.get("gpu_total_mb")
+
+    if free_mb is not None and total_mb is not None:
+        detail = (
+            f"{memory_delta_gb:.1f}GB / {free_mb / 1024:.1f}GB 가용 (총 {total_mb / 1024:.0f}GB)"
+        )
+    else:
+        detail = f"{memory_delta_gb:.1f}GB 사용"
+
     return _Line("✔", "green", f"VRAM 실측    {detail}")
+
+
+def _memory_headroom_line(result: dict) -> _Line | None:
+    """judge.py의 "memory_delta_high"(가용 VRAM 90% 이상 소모) WARN을 화면에 반영한다.
+
+    이 reason이 있는데도 보여줄 줄이 없으면 --model 모드에서는 `_vram_line`이
+    항상 초록 ✔이라 WARN이 떠도 화면·문제 카운트 어디에도 안 보였고, 기본
+    체크 모드는 애초에 VRAM 줄 자체가 없어 조용히 사라졌다(PR #26 리뷰 중
+    자체 발견). reason이 없으면 None을 돌려줘 아무 줄도 추가하지 않는다.
+    """
+    if "memory_delta_high" not in result.get("reasons", []):
+        return None
+
+    memory_delta_mb = result.get("memory_delta_mb")
+    free_mb = (result.get("env") or {}).get("gpu_free_mb")
+    if memory_delta_mb is not None and free_mb:
+        ratio_pct = memory_delta_mb / free_mb * 100
+        detail = f"가용 VRAM의 {ratio_pct:.0f}% 소모 — 실제 학습 시 OOM 위험 높음"
+    else:
+        detail = _REASON_MESSAGES["memory_delta_high"]
+    return _Line("⚠", "yellow", f"VRAM 여유    {detail}", is_problem=True)
 
 
 def _quant_lines(result: dict) -> list[_Line]:
@@ -150,7 +191,19 @@ def _target_size_line(result: dict) -> _Line | None:
 
 
 def _is_model_mode(result: dict) -> bool:
-    return result.get("cpu_multiplier") is None and result.get("status") == "ok"
+    """--model 체크 결과인지를 `model_name` 존재 여부로만 판단한다.
+
+    예전에는 `cpu_multiplier is None and status == "ok"`로 추론했는데,
+    `cpu_multiplier`가 None이 되는 경로가 두 가지였다 — ① 실제 --model
+    모드, ② GPU가 없는 "기본 체크"(worker.py가 device != "cuda"면 CPU
+    배속 비교 자체를 생략). ②를 모델 모드로 오인하면 "4bit 레이어
+    device=cpu" FAIL 줄이 통째로 안 그려지는 else 분기로 새 버려, 판정은
+    FAIL(종료 코드 1)인데 화면은 "문제 없음"이라고 말하는 상황이 났다
+    (#18에서 고친 문제가 리포트 층에서 재발 — PR #26 리뷰, 상영님 지적).
+    `model_name`은 cli.py가 --model 체크 결과에만 병합해주는 값이라 모드를
+    확정적으로 가른다 — 추론이 아니라 사실이다.
+    """
+    return result.get("model_name") is not None
 
 
 def _build_lines(result: dict) -> list[_Line]:
@@ -167,9 +220,20 @@ def _build_lines(result: dict) -> list[_Line]:
         target_line = _target_size_line(result)
         if target_line is not None:
             lines.append(target_line)
-    elif result.get("cpu_multiplier") is not None:
-        lines.append(_timing_line(result))
+    else:
+        # 기본 체크: quant 줄(_quant_lines)은 항상 그린다 — GPU가 아예 없는
+        # 환경은 cpu_multiplier도 None이라(worker.py가 device != "cuda"면
+        # CPU 배속 비교를 생략) `cpu_multiplier is not None`을 조건으로 걸면
+        # "4bit 레이어 device=cpu" FAIL 줄까지 함께 사라진다 — 판정은 FAIL인데
+        # 화면은 "문제 없음"이 되는 #18 재발 버그였다(PR #26 리뷰, 상영님 지적).
+        # timing 줄만 실제로 잰 값이 있을 때로 조건을 좁힌다.
+        if result.get("cpu_multiplier") is not None:
+            lines.append(_timing_line(result))
         lines.extend(_quant_lines(result))
+
+    headroom_line = _memory_headroom_line(result)
+    if headroom_line is not None:
+        lines.append(headroom_line)
 
     return lines
 
@@ -187,11 +251,32 @@ def _render_fix_block(console: Console, result: dict) -> None:
         console.print(f"안내: {message}")
 
 
+def _group_label(result: dict) -> str:
+    """결과가 여러 개일 때(기본 체크 + --model 체크) 각 블록 앞에 붙일 표제.
+
+    `_is_model_mode()`와 같은 기준(model_name 존재)으로 판단한다 — "index 0은
+    항상 기본 체크"라는 순서 가정에 기대지 않는다(PR #26 리뷰, 상영님 지적:
+    순서 추론은 결과가 하나뿐인 경우에는 아예 정보가 없고, 여럿이라도 실행
+    순서가 바뀌면 깨진다).
+    """
+    if _is_model_mode(result):
+        return f"모델 체크: {result['model_name']}"
+    return "기본 체크"
+
+
 def _render_text(results: list[dict], elapsed_seconds: float | None) -> None:
     console = Console()
+    # 결과가 2개 이상(기본 체크 + --model 체크)일 때만 구분 표제를 붙인다 —
+    # 단일 결과(기존 출력)는 지금까지의 화면 그대로 유지해 하위 호환을 지킨다.
+    show_group_labels = len(results) > 1
 
     all_lines: list[_Line] = []
-    for result in results:
+    for index, result in enumerate(results):
+        if show_group_labels:
+            if index > 0:
+                console.print()
+            console.print(f"[bold]{_group_label(result)}[/bold]")
+
         lines = _build_lines(result)
         all_lines.extend(lines)
         for line in lines:

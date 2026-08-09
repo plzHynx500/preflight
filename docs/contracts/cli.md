@@ -38,15 +38,35 @@ FIX: pip uninstall bitsandbytes && pip install bitsandbytes --upgrade
 3개 항목 확인 · 1개 문제 발견 · 소요 시간 4초
 ```
 
+`--model`이 주어지면 기본 체크(GPU/드라이버/CUDA 체인 확인)와 모델 체크(목표 config로
+실측)가 순서대로 모두 실행되어 `results`에 2개가 담긴다(단일 체크 출력은 위 첫 예시처럼
+표제 없이 지금까지와 동일하다 — 결과가 1개뿐일 때만이다). 텍스트 출력은 두 블록을
+`기본 체크`/`모델 체크: <model_name>` 표제로 구분해 보여주고, VRAM 실측 줄은 canary가
+옮긴 메모리량을 canary 기동 직전 조회한 가용/총 VRAM과 함께 보여준다(`query_gpu_state`,
+[canary-api.md](canary-api.md) 참고) — 이 가용 VRAM
+숫자가 바로 `judge_result`의 90% 헤드룸 WARN 판정에도 쓰인 숫자와 같다:
+
 ```
 $ preflight check --model meta-llama/Llama-3.1-8B --batch-size 2 --seq-len 2048
 
+기본 체크
 ✔ Canary 연산 실행              device=cuda · 메모리 이동 확인됨
-✔ VRAM 실측                     8.4GB / 12GB 가용 — batch=2, seq=2048 그대로 실행
+✔ 실행 시간 12ms                CPU 대비 41배 (정상 범위)
+✔ bitsandbytes 4bit 레이어      device=cuda 정상
+
+모델 체크: meta-llama/Llama-3.1-8B
+✔ Canary 연산 실행              device=cuda · 메모리 이동 확인됨
+✔ VRAM 실측                     8.4GB / 9.2GB 가용 (총 12GB)
 ✔ 목표 배치 크기 적합            batch=2, seq=2048 기준
 
-1개 모델 확인 · 문제 없음 · 소요 시간 18초
+6개 항목 확인 · 문제 없음 · 소요 시간 21초
 ```
+
+가용 VRAM의 90% 이상을 소모했으면(`memory_delta_high`) VRAM 실측 줄 옆에 `⚠ VRAM 여유`
+줄이 추가로 나온다 — WARN 판정과 화면이 항상 같은 숫자를 가리킨다.
+
+`--json` 모드는 이 표제와 무관하게 `results` 배열에 두 판정 결과를 순서 그대로(기본
+체크가 index 0) 가공 없이 담는다 — 표제는 텍스트 출력 전용이다.
 
 `--json`은 사람이 읽는 위 출력 대신, 다른 도구가 파싱하기 쉬운 아래 구조를 표준출력에 그대로 찍는다(`print()`로 출력 — 파이핑 시 색상 코드 등이 섞이지 않는다). `results`는 `judge_result()` 출력(및 있다면 `suggest_fix()` 결과를 병합한 `"fix"` 키)을 가공 없이 그대로 담고, `summary`는 위 요약 줄과 동일한 집계다. `exit_code_hint`는 WARN·FAIL 유무를 미리 계산해둔 참고값일 뿐 — 실제 종료 코드는 CLI 진입점이 결정한다.
 

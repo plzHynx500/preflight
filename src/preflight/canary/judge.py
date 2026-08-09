@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-MEMORY_DELTA_WARN_PCT = 15
+VRAM_HEADROOM_WARN_RATIO = 0.9
 CPU_MULTIPLIER_WARN_THRESHOLD = 2
 
 FAIL_STATUSES = ("oom", "import_crash", "error")
@@ -39,15 +39,23 @@ def judge_result(raw: dict) -> dict:
     if raw.get("quant_backend") == "nn-linear-fallback":
         reasons.append("quant_fallback")
 
-    # memory_delta_mb를 예측치와 비교하는 WARN 조건은 probe 기반 외삽(§7, 향후
-    # 확장)이 있어야 "예측값"이 생긴다. MVP에는 그 예측치가 없어 지금은 이 값이
-    # 전달될 때만(향후 raw에 added) 평가한다 — 미결 사항은 Notion "!내부용!
-    # 논의사항" §WARN 트리거 조건 참고.
-    expected_mb = raw.get("expected_memory_delta_mb")
+    # memory_delta_mb를 "예측 대비 15% 이탈"로 보던 원래 설계는 probe 기반
+    # 외삽(§7, 향후 확장)이 있어야 "예측값"이 생기는데 MVP에는 그게 없어 사실상
+    # 죽어있는 조건이었다. 2026-08-06 회의(안건 1)에서 "예측값과 비교" 대신
+    # "지금 가용한 VRAM 대비 canary가 이미 얼마나 먹었는가"로 기준을 바꾸기로
+    # 했다 — 예측 모델 없이도 이 GPU에서 당장 room이 부족한지 알 수 있고,
+    # 사용자에게도 "왜 위험한지" 훨씬 직관적으로 전달된다. reason 이름
+    # "memory_delta_high"는 그대로 유지한다("판정 항목 5개 중 하나의 의미가
+    # 바뀐 것"으로 취급 — 새 reason을 늘리지 않는다).
+    #
+    # gpu_free_mb는 canary를 "돌리지 않고도" 알 수 있는 값(gpu.query_gpu_state()가
+    # canary 기동 직전 부모 프로세스에서 조회)이라 env 서브딕트에 둔다 — 이 값이
+    # 없으면(NVML 조회 실패 등) 판정을 건너뛸 뿐 FAIL로 취급하지 않는다.
     memory_delta_mb = raw.get("memory_delta_mb")
-    if expected_mb is not None and memory_delta_mb is not None and expected_mb > 0:
-        deviation_pct = abs(memory_delta_mb - expected_mb) / expected_mb * 100
-        if deviation_pct >= MEMORY_DELTA_WARN_PCT:
+    gpu_free_mb = (raw.get("env") or {}).get("gpu_free_mb")
+    if memory_delta_mb is not None and gpu_free_mb is not None and gpu_free_mb > 0:
+        headroom_ratio = memory_delta_mb / gpu_free_mb
+        if headroom_ratio >= VRAM_HEADROOM_WARN_RATIO:
             reasons.append("memory_delta_high")
 
     cpu_multiplier = raw.get("cpu_multiplier")

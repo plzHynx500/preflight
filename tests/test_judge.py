@@ -130,13 +130,13 @@ def test_cpu_multiplier_none_is_not_evaluated() -> None:
     assert result["verdict"] == "PASS"
 
 
-def test_memory_delta_deviation_is_warn_when_expected_value_present() -> None:
-    """예측치(expected_memory_delta_mb)가 있을 때만 15% 이탈 여부를 평가한다.
+def test_memory_delta_high_when_headroom_mostly_consumed() -> None:
+    """2026-08-06 회의(안건 1): "예측 대비 15% 이탈" 대신 "가용 VRAM 대비 소모율"로 판정한다.
 
-    MVP에는 probe 기반 외삽이 없어 이 필드가 보통 없다(§7 향후 확장) — 있을 때만
-    평가하도록 만들어, 필드가 추가된 뒤에도 그대로 쓸 수 있게 해둔다.
+    gpu_free_mb(canary 기동 직전 조회된 가용 VRAM)의 90% 이상을 canary
+    실행만으로 소모했으면 실제 학습에서 OOM 위험이 크다고 보고 WARN이다.
     """
-    raw = {**_OK_RAW, "memory_delta_mb": 150.0, "expected_memory_delta_mb": 100.0}
+    raw = {**_OK_RAW, "memory_delta_mb": 950.0, "env": {"gpu_free_mb": 1000.0}}
 
     result = judge_result(raw)
 
@@ -144,8 +144,29 @@ def test_memory_delta_deviation_is_warn_when_expected_value_present() -> None:
     assert "memory_delta_high" in result["reasons"]
 
 
-def test_memory_delta_within_tolerance_is_pass() -> None:
-    raw = {**_OK_RAW, "memory_delta_mb": 105.0, "expected_memory_delta_mb": 100.0}
+def test_memory_delta_within_headroom_is_pass() -> None:
+    raw = {**_OK_RAW, "memory_delta_mb": 300.0, "env": {"gpu_free_mb": 1000.0}}
+
+    result = judge_result(raw)
+
+    assert "memory_delta_high" not in result["reasons"]
+    assert result["verdict"] == "PASS"
+
+
+def test_memory_delta_high_skipped_when_gpu_state_unavailable() -> None:
+    """gpu_free_mb를 못 구했으면(NVML 조회 실패 등) 이 WARN은 조용히 건너뛴다 — FAIL이 아니다."""
+    raw = {**_OK_RAW, "memory_delta_mb": 99999.0, "env": {}}
+
+    result = judge_result(raw)
+
+    assert "memory_delta_high" not in result["reasons"]
+    assert result["verdict"] == "PASS"
+
+
+def test_memory_delta_high_skipped_when_env_missing() -> None:
+    """env 키 자체가 없는(구버전 raw) 입력도 예외 없이 건너뛴다."""
+    raw = {**_OK_RAW, "memory_delta_mb": 99999.0}
+    raw.pop("env", None)
 
     result = judge_result(raw)
 
@@ -175,8 +196,8 @@ def test_cpu_multiplier_exactly_at_threshold_is_pass() -> None:
 
 
 def test_memory_delta_exactly_at_threshold_is_warn() -> None:
-    """경계값(15% 정각)은 이상이므로 WARN이다."""
-    raw = {**_OK_RAW, "memory_delta_mb": 115.0, "expected_memory_delta_mb": 100.0}
+    """경계값(가용 VRAM의 90% 정각)은 이상이므로 WARN이다."""
+    raw = {**_OK_RAW, "memory_delta_mb": 900.0, "env": {"gpu_free_mb": 1000.0}}
 
     result = judge_result(raw)
 

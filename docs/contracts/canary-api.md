@@ -139,6 +139,55 @@ transformers 버전에서 사라지는 경우 등) `build_minimal_canary_model`�
 4bit 가중치는 uint8로 packed되어 `numel()` 기준 파라미터 수가 실제의 절반으로 보인다
 — 리포트에 파라미터 수를 찍을 일이 있으면 `config`에서 계산해야 한다.
 
+## `query_gpu_state` (gpu.py, W-gpu 산출물)
+
+`judge_result`가 VRAM 헤드룸 기반 WARN을 판정하려면 "canary를 돌리기 직전, 이 GPU에
+얼마나 여유가 있었는지"가 필요하다. 이 값은 canary(자식 프로세스)를 실행해야만
+알 수 있는 게 아니라 — NVML로 그냥 조회하면 되는 값이라 **canary와 무관하게 부모
+프로세스에서** 얻는다(2026-08-06 회의 안건 3-1). `torch`를 import하지 않는
+`pynvml`(nvidia-ml-py)만 쓰므로 ADR-0002가 격리하려는 대상(`import torch`가
+프로세스를 죽이는 것)과 무관하다.
+
+```python
+def query_gpu_state(device_index: int = 0) -> dict | None:
+    return {
+        "name": "NVIDIA GeForce RTX 4070 Ti",
+        "total_mb": 12282.0,
+        "free_mb": 11500.0,
+        "driver_version": "610.62",
+    }
+    # 실패(NVML 미설치·드라이버 없음·GPU 없음 등)하면 예외 대신 None을 돌려준다.
+```
+
+**호출 시점이 중요하다** — canary 기동 "직전" 1회만 불러야 한다. canary가 돌기
+시작한 뒤에 조회하면 `free_mb`가 canary 자신의 점유만큼 깎여 오염된다. 다중 GPU는
+MVP 범위 밖이라 `device_index=0`(기본 GPU)만 본다.
+
+**`judge_result`로 넘기는 방법**: `run_canary_check()`의 7개 필드 반환 스키마 자체에는
+포함되지 않는다 — 호출한 쪽(cli.py, W12)이 `query_gpu_state()`를 별도로 불러
+`env`에 `gpu_free_mb`·`gpu_total_mb`(둘 다 MB) 두 값을 병합한 뒤 `judge_result()`에
+넘긴다. `gpu_total_mb`는 화면(report.py `_vram_line`)이 "X.XGB / Y.YGB 가용 (총
+Z.ZGB)"를 판정과 같은 숫자로 보여주는 데 쓰인다.
+
+```python
+raw["env"] = {**(raw.get("env") or {}), "gpu_free_mb": state["free_mb"], "gpu_total_mb": state["total_mb"]}
+```
+
+**반드시 병합이어야 한다 — 대입(`raw["env"] = {...}`)이 아니다.** `env`는 자식(canary,
+#19)과 부모(cli.py, 이 절)가 함께 채워 넣는 칸이다. 대입하면 자식이 먼저 채워둔 값
+(`torch_version`·`bnb_compiled_with_cuda` 등)이 통째로 사라진다. `raw.get("env") or {}`가
+자식이 아예 못 채운 경우(`env` 키가 있어도 값이 `None`인 경우 — subprocess 기동 실패·
+타임아웃·자식이 결과 없이 죽은 경우 전부 `_normalize()`가 `env`를 `None`으로 채운다)까지
+포함해 처리한다. `raw.setdefault("env", {}).update(...)`는 **틀린 형태다** — `setdefault`는
+키가 "있는지"만 보는데 `_normalize()`가 항상 모든 필드를 키로 만들어두므로, `env`가
+`None`인 채로 키만 있으면 `setdefault`가 그 `None`을 그대로 돌려주고 `.update()`가
+`AttributeError`로 부모 프로세스를 죽인다 — 하필 `import_crash`처럼 `env`가 비는 바로 그
+상황에서(ADR-0002가 막으려던 것과 같은 종류의 실패). 이 절이 실측(PR #26 리뷰, 상영님
+지적)으로 정정된 이력이다.
+
+`env`가 없거나 `env.gpu_free_mb`가 없으면(NVML 조회
+실패 등) `judge_result`는 관련 WARN 판정을 조용히 건너뛴다 — 필수 입력이 아니다.
+
 ## `judge_result`
 
 원시 측정값에 매직넘버 기준을 비교해 `verdict`와 `reasons`를 얹는다. **원인은 몰라도 된다** — 순수 숫자·상태 비교일 뿐이다.
@@ -157,10 +206,10 @@ def judge_result(raw: dict) -> dict:
 | 판정 | 조건 |
 |---|---|
 | FAIL | `status == "oom"` · `status == "import_crash"` · `status == "error"` · **`device == "cpu"`**(`quant_backend`와 무관) |
-| WARN | `memory_delta_mb`가 예측 대비 15% 이상 벗어남 · `cpu_multiplier < 2` |
+| WARN | `memory_delta_mb`가 `env.gpu_free_mb`(canary 기동 직전 가용 VRAM)의 90% 이상 · `cpu_multiplier < 2` |
 | PASS | 위 조건에 전부 해당하지 않음 |
 
-FAIL 4개·WARN 2개, 총 6개 판정 항목 전부 MVP 구현으로 팀이 확정했다(`status == "error"`는 W5 구현 중 추가). 두 숫자(15%, 2배)는 정밀 검증된 값이 아니라 매직넘버로 우선 채택한 것이며, 실측 데이터가 쌓이면 조정한다.
+FAIL 4개·WARN 2개, 총 6개 판정 항목 전부 MVP 구현으로 팀이 확정했다(`status == "error"`는 W5 구현 중 추가). 두 숫자(90%, 2배)는 정밀 검증된 값이 아니라 매직넘버로 우선 채택한 것이며, 실측 데이터가 쌓이면 조정한다.
 
 > **`device == "cpu"` FAIL은 `quant_backend`와 무관하게 적용된다** (2026-08-03, #18로 발견된 계약 구멍 수정). 기본 체크의 목적 자체가 "GPU/드라이버/CUDA 체인이 물리적으로 살아있는가"([architecture.md §3](../architecture.md))라서, 4bit 레이어 유무와 무관하게 device가 cpu면 그 자체로 실패다. 원래는 `quant_backend == "bnb-4bit"`일 때만 이 조건을 봤는데, 그러면 bitsandbytes 자체가 없어 4bit 레이어가 없는 환경(`quant_backend == "nn-linear-fallback"`)은 이 규칙이 발동하지 못해 GPU가 전혀 없는데도 PASS가 나가는 구멍이 있었다. reason 이름은 `"quant_layer_device_cpu"`를 그대로 쓴다(하위 호환). `quant_backend == "nn-linear-fallback"`이면 이 FAIL과 별개로 `reasons`에 `"quant_fallback"`이 항상 추가로 남아 폴백 사실도 함께 드러난다(이 값 자체는 verdict에 영향을 주지 않는 정보성이다).
 >
@@ -171,7 +220,7 @@ FAIL 4개·WARN 2개, 총 6개 판정 항목 전부 MVP 구현으로 팀이 확�
 > | `nn-linear-fallback` | `cuda` | PASS (`reasons`에 정보성 `quant_fallback`만) |
 > | `nn-linear-fallback` | `cpu` | FAIL (`quant_layer_device_cpu` + `quant_fallback`) |
 
-> **`memory_delta_mb` 예측 비교는 현재 사실상 대기 상태다.** 15% 이탈 판정은 raw에 `expected_memory_delta_mb`(옵션, 위 7개 필드 스키마에는 없음)가 있을 때만 평가된다. 이 예측값은 probe 기반 외삽([architecture.md §7](../architecture.md))이 있어야 생기는데 MVP에는 아직 없어서, 이 필드가 없는 한 이 WARN 조건은 발동하지 않는다 — 팀 미결 사항(Notion "!내부용! 논의사항" §WARN 트리거 조건 참고).
+> **`memory_delta_mb` WARN은 "예측 대비 이탈"이 아니라 "가용 VRAM 대비 소모율"이다** (2026-08-06 회의 안건 1로 판정 기준 자체가 바뀜). 원래 설계는 raw에 `expected_memory_delta_mb`(probe 기반 외삽, [architecture.md §7](../architecture.md))가 있을 때만 15% 이탈 여부를 평가했는데, MVP에는 그 외삽이 없어 사실상 죽어있는 조건이었다. 대신 canary 기동 직전에 조회한 `env.gpu_free_mb`([`query_gpu_state`](#query_gpu_state-gpupy-w-gpu-산출물) 참고) 대비 `memory_delta_mb`가 90% 이상이면 WARN이다 — 예측 모델 없이도 "이 canary 실행만으로 가용 VRAM을 거의 다 썼다 → 실제 학습(더 큰 배치/시퀀스)에서는 OOM 위험이 크다"는 신호를 바로 줄 수 있다. reason 이름은 `"memory_delta_high"`를 그대로 쓴다(판정 항목 6개 중 하나의 *의미*가 바뀐 것으로 취급 — reason을 새로 늘리지 않는다). `env.gpu_free_mb`가 없으면(NVML 조회 실패 등) 이 WARN은 조용히 건너뛰고 FAIL로 취급하지 않는다.
 
 ## `suggest_fix`
 

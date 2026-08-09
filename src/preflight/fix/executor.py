@@ -49,7 +49,10 @@ _FIX_MAP: dict[str, dict[str, str | None]] = {
         "fix_command": None,
     },
     "memory_delta_high": {
-        "message": "메모리 사용량이 예측 대비 15% 이상 벗어남 (fragmentation·activation 재계산 등 후보 원인 안내)",
+        "message": (
+            "canary 실행만으로 가용 VRAM의 90% 이상 소모 — 실제 학습 시 배치/모델 크기를"
+            " 그대로 쓰면 OOM 가능성 높음 (batch_size 축소 권장)"
+        ),
         "fix_command": None,
     },
     "cpu_multiplier_low": {
