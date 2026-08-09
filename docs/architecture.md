@@ -73,9 +73,11 @@ result = run_canary(model, batch_size=target_batch_size, seq_len=target_seq_len)
 - **OOM 위험**: 실재하지만 별도 안전장치가 필요 없다 — 프로세스 격리가 이 크래시를 그대로 잡아 정상 FAIL로 포장한다
 - **CPU 대비 실행시간 비교는 하지 않는다** — 모델별 비교는 §7(향후)로 미뤘다. `--model` 실행에서는 device placement만 조회한다
 
-### 학습 설정 세부 옵션 — MVP는 플래그 없음, 고정 가정
+### 학습 설정 세부 옵션 — MVP는 QLoRA(4bit)+AdamW 고정 적용, 사용자 override 불가
 
-`--model` 실행은 QLoRA(4bit) + AdamW라는 고정 가정으로 canary를 구성한다. 사용자가 플래그로 지정하는 기능(LoRA/양자화/옵티마이저 override, 학습 스크립트 정적 파싱, unsloth 분기 실행)은 MVP 이후 확장 범위다 — 상세 우선순위는 Notion SRS 로드맵을 따른다.
+`--model` 실행은 **항상** QLoRA(4bit 양자화 + LoRA 어댑터) + AdamW로 canary를 구성한다 — 이건 선택 사항이 아니라 MVP의 고정 동작이다. 사용자가 플래그로 이 값을 바꾸는 기능(LoRA/양자화/옵티마이저 override, 학습 스크립트 정적 파싱, unsloth 분기 실행)만 MVP 이후 확장 범위다 — 상세 우선순위는 Notion SRS 로드맵을 따른다.
+
+> 4bit·LoRA를 빼고 fp32 전체 모델을 그대로 구성하면 8B급 모델 기준 가중치 32GB+gradient 32GB+AdamW 상태 64GB=128GB가 필요해 12GB급 GPU에서는 사실상 항상 OOM이 나서 VRAM 실측 자체가 불가능해진다(2026-08-03, PR #12 리뷰 중 발견). SRS §2가 전제하는 사용자("QLoRA로 12GB 카드에서 파인튜닝하려는 사람")에게 fp32 풀파인튜닝 기준 수치를 보여주는 건 진단이 아니라 오답이다.
 
 ---
 
