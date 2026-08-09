@@ -100,28 +100,6 @@ def test_run_canary_check_survives_subprocess_failure(monkeypatch) -> None:
     assert "subprocess를 띄울 수 없음" in result["error_log"]
 
 
-def test_run_canary_check_model_path_is_not_wired_yet(monkeypatch) -> None:
-    """`--model` 경로는 W4(이인수) 완료 후에도 W9 통합 전까지는 연결되지 않는다.
-
-    실제 자식 프로세스를 띄우는 유일한 비-GPU 테스트다. build_dummy_model()은 이제
-    구현돼 있어(W4) 실제로 AutoConfig.from_pretrained()를 시도하는데, transformers가
-    설치된 환경(실제 사용자 환경)에서 그대로 두면 존재하지 않는 모델명으로 진짜
-    네트워크 호출을 시도해 테스트가 네트워크에 의존하게 된다 — 오프라인 모드로
-    강제해 로컬에서 즉시 실패하게 한다. torch/transformers가 아예 없는 환경에서는
-    import 실패로, 있는 환경에서는 오프라인 조회 실패로 끝나지만, 어느 쪽이든
-    worker.py의 이어지는 raise NotImplementedError(W9 미연결)까지 가지 않고
-    부모는 정규화된 결과를 받는다.
-    """
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-
-    result = run_canary_check("some/model", 1, 8)
-
-    assert set(result) == set(RESULT_FIELDS)
-    assert result["status"] == "error"
-    assert result["error_log"]
-
-
 @requires_cuda
 def test_basic_check_runs_on_gpu() -> None:
     """실제 canary를 GPU에서 돌려 device·메모리·시간이 측정되는지 확인한다."""

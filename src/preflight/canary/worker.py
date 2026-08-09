@@ -323,11 +323,30 @@ def _run(torch, spec: dict, env: dict) -> dict:
     if model_name is None:
         return _run_basic_check(torch, batch_size, seq_len, env)
 
-    # `--model` 경로(FR-02)는 이인수의 W4가 build_dummy_model()을 채운 뒤 W9에서
-    # 연결된다. 지금은 아래 호출이 NotImplementedError를 올리고 main()이 그것을
-    # status="error" + error_log로 정규화한다 — 부모는 죽지 않는다.
-    build_dummy_model(model_name)
-    raise NotImplementedError("`--model` 경로는 아직 엔진에 연결되지 않았다 (WORKPLAN W4·W9).")
+    return _run_model_check(torch, model_name, batch_size, seq_len, env)
+
+
+def _run_model_check(torch, model_name: str, batch_size: int, seq_len: int, env: dict) -> dict:
+    from preflight.canary.model import build_dummy_input as build_hf_dummy_input
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model, config, quant_backend = build_dummy_model(model_name, device)
+    dummy_input = build_hf_dummy_input(batch_size, seq_len, config.vocab_size, device)
+
+    measured = _execute_canary_cycle(torch, model, dummy_input, device, quant_backend)
+
+    return {
+        "status": STATUS_OK,
+        "device": measured["device"],
+        "memory_delta_mb": measured["memory_delta_mb"],
+        "elapsed_ms": measured["elapsed_ms"],
+        "cpu_multiplier": None,
+        "quant_backend": measured["quant_backend"],
+        "error_log": None,
+        "env": env,
+        "rss_peak_mb": _read_rss_peak_mb(),
+    }
 
 
 def _run_basic_check(torch, batch_size: int, seq_len: int, env: dict) -> dict:
@@ -405,6 +424,10 @@ def _measure_once(torch, device: str, dtype, batch_size: int, seq_len: int, pref
     """
     model, quant_backend = build_minimal_canary_model(device, dtype, prefer_4bit)
     dummy_input = build_minimal_canary_input(batch_size, seq_len, device, dtype)
+    return _execute_canary_cycle(torch, model, dummy_input, device, quant_backend)
+
+
+def _execute_canary_cycle(torch, model, dummy_input, device: str, quant_backend: str):
     trainable = [param for param in model.parameters() if param.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=1e-4)
 
@@ -448,7 +471,11 @@ def _train_step(model, dummy_input, optimizer) -> None:
     (docs/architecture.md §4).
     """
     optimizer.zero_grad(set_to_none=True)
-    loss = model(dummy_input).float().pow(2).mean()
+    outputs = model(dummy_input)
+    if hasattr(outputs, "logits"):
+        loss = outputs.logits.float().pow(2).mean()
+    else:
+        loss = outputs.float().pow(2).mean()
     loss.backward()
     optimizer.step()
 
@@ -459,8 +486,9 @@ def _base_layer_device(model):
     "4bit 레이어 device=cpu 감지"가 판정 항목이므로 모델 전체가 아니라 베이스
     레이어를 직접 본다.
     """
-    for param in model[0].base.parameters():
-        return str(param.device).split(":")[0]
+    for param in model.parameters():
+        if not param.requires_grad:
+            return str(param.device).split(":")[0]
     return None
 
 

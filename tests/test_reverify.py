@@ -98,7 +98,9 @@ def test_cli_yes_calls_reverify_after_fix_success() -> None:
         patch("preflight.cli.reverify", return_value=fake_reverified) as mock_reverify,
         patch("preflight.cli.render_report") as mock_render,
     ):
-        result = runner.invoke(app, ["--yes", "--model", "test-model", "--batch-size", "4"])
+        result = runner.invoke(
+            app, ["check", "--yes", "--model", "test-model", "--batch-size", "4"]
+        )
         assert result.exit_code == 0
         mock_apply_fix.assert_called_once()
         mock_reverify.assert_called_once_with(
@@ -134,7 +136,7 @@ def test_cli_yes_exits_nonzero_when_reverify_fails() -> None:
         patch("preflight.cli.reverify", return_value=fake_reverified) as mock_reverify,
         patch("preflight.cli.render_report") as mock_render,
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 1
         mock_apply_fix.assert_called_once()
         mock_reverify.assert_called_once()
@@ -158,7 +160,7 @@ def test_cli_yes_not_called_when_initial_pass() -> None:
         patch("preflight.cli.reverify") as mock_reverify,
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 0
         mock_apply_fix.assert_not_called()
         mock_reverify.assert_not_called()
@@ -187,7 +189,7 @@ def test_cli_yes_not_called_when_apply_fix_raises_error() -> None:
         patch("preflight.cli.reverify") as mock_reverify,
         patch("preflight.cli.render_report") as mock_render,
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code != 0
         mock_apply_fix.assert_called_once()
         mock_reverify.assert_not_called()
@@ -210,7 +212,12 @@ def test_cli_without_yes_does_not_call_reverify() -> None:
         patch("preflight.cli.reverify") as mock_reverify,
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, [])
+        result = runner.invoke(
+            app,
+            [
+                "check",
+            ],
+        )
         assert result.exit_code == 1
         mock_apply_fix.assert_not_called()
         mock_reverify.assert_not_called()

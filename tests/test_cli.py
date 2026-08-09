@@ -10,7 +10,7 @@ runner = CliRunner()
 
 
 def test_check_command_exists() -> None:
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(app, ["check", "--help"])
     assert result.exit_code == 0
 
 
@@ -37,7 +37,12 @@ def test_check_exit_code_pass() -> None:
         patch("preflight.cli.judge_result", return_value=fake_res),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, [])
+        result = runner.invoke(
+            app,
+            [
+                "check",
+            ],
+        )
         assert result.exit_code == 0
 
 
@@ -54,7 +59,12 @@ def test_check_exit_code_fail() -> None:
         patch("preflight.cli.judge_result", return_value=fake_res),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, [])
+        result = runner.invoke(
+            app,
+            [
+                "check",
+            ],
+        )
         assert result.exit_code == 1
 
 
@@ -71,7 +81,12 @@ def test_check_exit_code_warn() -> None:
         patch("preflight.cli.judge_result", return_value=fake_res),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, [])
+        result = runner.invoke(
+            app,
+            [
+                "check",
+            ],
+        )
         assert result.exit_code == 2
 
 
@@ -96,7 +111,7 @@ def test_check_exit_code_yes_reverify_pass() -> None:
         patch("preflight.cli.reverify", return_value=fake_reverified),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 0
 
 
@@ -121,7 +136,7 @@ def test_check_exit_code_yes_reverify_warn() -> None:
         patch("preflight.cli.reverify", return_value=fake_reverified),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 2
 
 
@@ -146,5 +161,5 @@ def test_check_exit_code_yes_reverify_fail() -> None:
         patch("preflight.cli.reverify", return_value=fake_reverified),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 1

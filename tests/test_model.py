@@ -28,8 +28,9 @@ import sys
 import types
 
 import pytest
-import torch
-from torch import nn
+
+torch = pytest.importorskip("torch")
+nn = pytest.importorskip("torch.nn")
 
 
 class _FakeConfig:
@@ -274,7 +275,7 @@ def test_build_dummy_input_uses_vocab_size_from_config() -> None:
     from preflight.canary.model import build_dummy_input
 
     vocab_size = 128
-    input_ids = build_dummy_input(batch_size=2, seq_len=6, vocab_size=vocab_size)
+    input_ids = build_dummy_input(batch_size=2, seq_len=6, vocab_size=vocab_size, device="cpu")
 
     assert input_ids.shape == (2, 6)
     assert input_ids.dtype in (torch.int64, torch.int32)
@@ -287,7 +288,9 @@ def test_build_dummy_model_and_input_are_compatible(fake_transformers, fake_bits
     from preflight.canary.model import build_dummy_input, build_dummy_model
 
     _model, config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
-    input_ids = build_dummy_input(batch_size=1, seq_len=4, vocab_size=config.vocab_size)
+    input_ids = build_dummy_input(
+        batch_size=1, seq_len=4, vocab_size=config.vocab_size, device="cpu"
+    )
 
     assert input_ids.shape == (1, 4)
 

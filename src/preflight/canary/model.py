@@ -197,7 +197,7 @@ def _attach_manual_lora(model, bnb, torch, device: str) -> None:
             module.register_forward_hook(adapter)
 
 
-def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int):
+def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int, device: str):
     """`--model` 경로용 더미 입력 — 토큰 ID(정수) 텐서.
 
     기본 체크(`build_minimal_canary_input`)는 임베딩이 없어 float 텐서를 바로
@@ -207,7 +207,7 @@ def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int):
     """
     import torch
 
-    return torch.randint(0, vocab_size, (batch_size, seq_len))
+    return torch.randint(0, vocab_size, (batch_size, seq_len), device=torch.device(device))
 
 
 def build_minimal_canary_model(device: str, dtype, prefer_4bit: bool = True):

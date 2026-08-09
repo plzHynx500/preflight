@@ -261,7 +261,12 @@ def test_cli_check_without_yes_does_not_execute_fix() -> None:
         patch("preflight.cli.render_report"),
         patch("preflight.cli.apply_fix") as mock_apply_fix,
     ):
-        result = runner.invoke(app, [])
+        result = runner.invoke(
+            app,
+            [
+                "check",
+            ],
+        )
         assert result.exit_code == 1
         mock_apply_fix.assert_not_called()
 
@@ -280,9 +285,10 @@ def test_cli_check_with_yes_executes_fix() -> None:
         patch("preflight.cli.run_canary_check", return_value=fake_raw),
         patch("preflight.cli.judge_result", return_value=fake_res),
         patch("preflight.cli.render_report"),
+        patch("preflight.cli.reverify", return_value=fake_res),
         patch("preflight.cli.apply_fix") as mock_apply_fix,
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 1
         mock_apply_fix.assert_called_once()
         fix_arg = mock_apply_fix.call_args[0][0]
@@ -306,6 +312,34 @@ def test_cli_check_with_yes_no_fix_when_pass() -> None:
         patch("preflight.cli.render_report"),
         patch("preflight.cli.apply_fix") as mock_apply_fix,
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 0
         mock_apply_fix.assert_not_called()
+
+
+def test_cli_check_with_yes_reverify_pass_exits_0() -> None:
+    runner = CliRunner()
+    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_res_fail = {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["status_import_crash"],
+        "error_log": "CUDA Setup failed",
+    }
+    fake_res_pass = {
+        "status": "ok",
+        "device": "cuda",
+        "verdict": "PASS",
+        "reasons": [],
+    }
+
+    with (
+        patch("preflight.cli.run_canary_check", return_value=fake_raw),
+        patch("preflight.cli.judge_result", return_value=fake_res_fail),
+        patch("preflight.cli.render_report"),
+        patch("preflight.cli.reverify", return_value=fake_res_pass),
+        patch("preflight.cli.apply_fix") as mock_apply_fix,
+    ):
+        result = runner.invoke(app, ["check", "--yes"])
+        assert result.exit_code == 0
+        mock_apply_fix.assert_called_once()
