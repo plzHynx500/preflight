@@ -107,10 +107,18 @@ def test_run_canary_check_model_path_is_not_wired_yet(monkeypatch) -> None:
     구현돼 있어(W4) 실제로 AutoConfig.from_pretrained()를 시도하는데, transformers가
     설치된 환경(실제 사용자 환경)에서 그대로 두면 존재하지 않는 모델명으로 진짜
     네트워크 호출을 시도해 테스트가 네트워크에 의존하게 된다 — 오프라인 모드로
-    강제해 로컬에서 즉시 실패하게 한다. torch/transformers가 아예 없는 환경에서는
-    import 실패로, 있는 환경에서는 오프라인 조회 실패로 끝나지만, 어느 쪽이든
-    worker.py의 이어지는 raise NotImplementedError(W9 미연결)까지 가지 않고
-    부모는 정규화된 결과를 받는다.
+    강제해 로컬에서 즉시 실패하게 한다.
+
+    **status는 torch 설치 여부에 따라 갈린다.** torch/transformers가 없는 환경은
+    `import torch`에서 먼저 죽어 `import_crash`(#20이 도입한 분류)가 되고, 있는
+    환경은 import를 통과한 뒤 오프라인 config 조회에 실패해 `error`가 된다. torch는
+    의도적으로 하드 의존성이 아니므로(pyproject.toml) 둘 다 정상적인 환경인데,
+    원래는 `== "error"`로 한쪽만 단정하고 있어서 torch 없는 깨끗한 venv에서는
+    이 테스트가 항상 깨졌다(#20 머지로 드러난 잠복 버그, 실측 확인 후 수정).
+
+    이 테스트가 지키려는 것은 status의 특정 값이 아니라 **"어느 쪽으로 실패하든
+    worker.py의 이어지는 raise NotImplementedError(W9 미연결)까지 가지 않고 부모가
+    정규화된 결과를 받는다"** 는 계약이다.
     """
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
@@ -118,7 +126,7 @@ def test_run_canary_check_model_path_is_not_wired_yet(monkeypatch) -> None:
     result = run_canary_check("some/model", 1, 8)
 
     assert set(result) == set(RESULT_FIELDS)
-    assert result["status"] == "error"
+    assert result["status"] in ("error", "import_crash")
     assert result["error_log"]
 
 
