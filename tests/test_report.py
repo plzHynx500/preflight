@@ -430,3 +430,110 @@ def test_render_report_two_results_json_mode_unaffected(capsys) -> None:
     assert len(payload["results"]) == 2
     assert "기본 체크" not in out
     assert "모델 체크" not in out
+
+
+# ── 생략된 체크(skipped) — cli.md "결과 집계" / #36 ──────────────────────────
+#
+# fail-fast로 모델 체크가 생략되면 CLI가 넘기는 항목에는 status·verdict·reasons가
+# 통째로 없다. 판정 줄을 그리려 들면 status가 None이라 "status=None 감지" 같은
+# 빨간 ✖ 줄이 나가고 문제 개수까지 하나 늘어났다(#36).
+
+_SKIPPED_ITEM = {
+    "model_name": "meta-llama/Llama-3.1-8B",
+    "batch_size": 2,
+    "seq_len": 2048,
+    "skipped": "환경 체크 실패",
+}
+
+_FAILED_BASIC = {
+    **_OK_RAW,
+    "device": "cpu",  # quant_layer_device_cpu → FAIL
+}
+
+
+def test_render_report_skipped_item_shows_reason_not_failure_line(capsys) -> None:
+    """생략 항목은 생략 사유 한 줄만 그린다 — 판정 줄(✖)이 아니다."""
+    basic = judge_result(_FAILED_BASIC)
+    assert basic["verdict"] == "FAIL"
+
+    render_report([basic, _SKIPPED_ITEM])
+
+    out = capsys.readouterr().out
+    assert "— 환경 체크 실패로 생략" in out
+    # 생략 항목이 별개의 실패처럼 보이면 안 된다.
+    assert "status=None" not in out
+    assert "정상 실행 불가" not in out
+
+
+def test_render_report_skipped_item_not_counted_as_item_or_problem(capsys) -> None:
+    """생략 항목은 판정된 적이 없으므로 항목 수·문제 수 어디에도 안 들어간다.
+
+    cli.md의 생략 예시가 "3개 항목 확인 · 1개 문제 발견"인데, 고치기 전에는
+    "4개 항목 확인 · 2개 문제 발견"이 나왔다(#36).
+    """
+    basic = judge_result(_FAILED_BASIC)
+
+    render_report([basic, _SKIPPED_ITEM])
+
+    out = capsys.readouterr().out
+    assert "3개 항목 확인" in out
+    assert "1개 문제 발견" in out
+
+
+def test_render_report_skipped_item_keeps_group_label(capsys) -> None:
+    """생략됐어도 model_name이 있으므로 표제는 정상적으로 "모델 체크: <name>"이다."""
+    basic = judge_result(_FAILED_BASIC)
+
+    render_report([basic, _SKIPPED_ITEM])
+
+    out = capsys.readouterr().out
+    assert "기본 체크" in out
+    assert "모델 체크: meta-llama/Llama-3.1-8B" in out
+
+
+def test_render_report_skipped_item_json_summary_excludes_it(capsys) -> None:
+    """--json의 summary 집계에서도 생략 항목은 빠진다. results 배열에는 그대로 남는다."""
+    basic = judge_result(_FAILED_BASIC)
+
+    render_report([basic, _SKIPPED_ITEM], json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+
+    # 원본은 가공 없이 그대로 통과된다(cli.md 계약).
+    assert len(payload["results"]) == 2
+    assert payload["results"][1]["skipped"] == "환경 체크 실패"
+    # 집계에는 안 들어간다.
+    assert payload["summary"]["total_items"] == 3
+    assert payload["summary"]["fail"] == 1
+
+
+def test_render_report_skipped_item_does_not_break_exit_code_hint(capsys) -> None:
+    """verdict가 없는 생략 항목 때문에 exit_code_hint가 왜곡되지 않는다.
+
+    생략은 기본 체크 FAIL일 때만 일어나 결과가 뒤집히진 않지만, 판정 대상에서
+    명시적으로 빼서 "우연히 맞는" 상태를 남기지 않는다.
+    """
+    all_pass = judge_result(_OK_RAW)
+    assert all_pass["verdict"] == "PASS"
+
+    # 판정된 항목이 전부 PASS면, 생략 항목이 섞여 있어도 힌트는 0이어야 한다.
+    render_report([all_pass, _SKIPPED_ITEM], json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["exit_code_hint"] == 0
+
+
+def test_render_report_fix_block_comes_after_all_check_blocks(capsys) -> None:
+    """FIX는 체크 블록 사이가 아니라 전부 그린 뒤 한 번에 나온다(cli.md 출력 예시)."""
+    basic = judge_result(_FAILED_BASIC)
+    basic["fix"] = {
+        "cause": "bnb_not_compiled_with_cuda",
+        "message": "bitsandbytes가 CUDA 지원 없이 빌드됨",
+        "fix_command": "pip install bitsandbytes --upgrade --force-reinstall",
+    }
+
+    render_report([basic, _SKIPPED_ITEM])
+
+    out = capsys.readouterr().out
+    assert out.index("모델 체크: meta-llama/Llama-3.1-8B") < out.index("FIX:")
+    assert out.index("— 환경 체크 실패로 생략") < out.index("FIX:")

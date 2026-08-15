@@ -29,7 +29,12 @@ _ERROR_LOG_MAX_CHARS = 200
 
 
 class _Line:
-    """화면에 찍히는 항목 한 줄 — symbol/스타일 + 문제 카운트 여부."""
+    """화면에 찍히는 항목 한 줄 — symbol/스타일 + 문제 카운트 여부.
+
+    `counts_as_item`은 "판정을 받은 항목인가"를 뜻한다. 생략된 체크(`skipped`)는
+    화면에는 한 줄 나오지만 판정된 적이 없으므로 "N개 항목 확인"의 N에도,
+    `summary.total_items`에도 들어가면 안 된다(cli.md "결과 집계").
+    """
 
     def __init__(
         self,
@@ -38,12 +43,37 @@ class _Line:
         text: str,
         detail: str | None = None,
         is_problem: bool = False,
+        counts_as_item: bool = True,
     ) -> None:
         self.symbol = symbol
         self.style = style
         self.text = text
         self.detail = detail
         self.is_problem = is_problem
+        self.counts_as_item = counts_as_item
+
+
+def _is_skipped(result: dict) -> bool:
+    """fail-fast로 아예 실행되지 않은 체크인가(cli.md "결과 집계").
+
+    기본 체크가 FAIL이면 모델 체크는 돌리지 않고 CLI가 `{"model_name": ...,
+    "skipped": "<사유>"}` 형태의 항목을 넘긴다 — `status`·`verdict`·`reasons`가
+    통째로 없다. 판정 줄을 그리려 들면 `status`가 None이라 "status=None 감지"
+    같은 빨간 ✖ 줄이 나가고 문제 개수까지 하나 늘어난다.
+    """
+    return "skipped" in result
+
+
+def _skipped_line(result: dict) -> _Line:
+    """생략 사유 한 줄. 판정 줄이 아니므로 기호도 없고 어디에도 세지 않는다."""
+    reason = result.get("skipped") or "생략됨"
+    return _Line(
+        "—",
+        "dim",
+        f"{reason}로 생략",
+        is_problem=False,
+        counts_as_item=False,
+    )
 
 
 def _status_line(result: dict) -> _Line:
@@ -208,6 +238,10 @@ def _is_model_mode(result: dict) -> bool:
 
 def _build_lines(result: dict) -> list[_Line]:
     """result 하나로부터 화면에 찍힐 line item 목록을 만든다."""
+    # 생략된 체크는 판정 필드가 통째로 없으므로 _status_line보다 먼저 걸러야 한다.
+    if _is_skipped(result):
+        return [_skipped_line(result)]
+
     lines: list[_Line] = [_status_line(result)]
 
     if result.get("status") != "ok":
@@ -280,20 +314,28 @@ def _render_text(results: list[dict], elapsed_seconds: float | None) -> None:
         lines = _build_lines(result)
         all_lines.extend(lines)
         for line in lines:
-            if line.symbol == "ℹ":
-                console.print(f"[dim]ℹ {line.text}[/dim]")
+            # 판정 줄이 아닌 것(정보성 ℹ, 생략 —)은 줄 전체를 흐리게 — 판정 결과와
+            # 시각적으로 섞이지 않게 한다.
+            if line.symbol == "ℹ" or not line.counts_as_item:
+                console.print(f"[dim]{line.symbol} {line.text}[/dim]")
             else:
                 console.print(f"[{line.style}]{line.symbol}[/{line.style}] {line.text}")
             if line.detail:
                 console.print(f"    [dim]{line.detail}[/dim]")
 
+    # FIX 블록은 개별 체크 블록 사이가 아니라 **전부 그린 뒤 한 번에** 나온다
+    # (cli.md "출력 예시"). 체크 블록 사이에 끼면 "무엇이 문제인가"를 읽는 흐름이
+    # "무엇을 해야 하는가"로 끊긴다 — 결과가 2개가 되면서 드러난 차이라, 결과가
+    # 1개일 때의 화면은 이 변경 전후가 동일하다.
+    for result in results:
         if result.get("verdict") != "PASS" and result.get("fix"):
             console.print()
             _render_fix_block(console, result)
 
     console.print()
 
-    item_count = len(all_lines)
+    # 생략 줄(counts_as_item=False)은 판정된 적이 없어 항목 수에서 뺀다.
+    item_count = sum(1 for line in all_lines if line.counts_as_item)
     problem_count = sum(1 for line in all_lines if line.is_problem)
     is_model_mode = len(results) == 1 and _is_model_mode(results[0])
     item_label = "1개 모델 확인" if is_model_mode else f"{item_count}개 항목 확인"
@@ -312,6 +354,9 @@ def _compute_summary(results: list[dict], elapsed_seconds: float | None) -> dict
     fail_count = 0
     for result in results:
         for line in _build_lines(result):
+            if not line.counts_as_item:
+                # 생략 줄 — 판정된 적이 없으므로 total에도 pass/warn/fail에도 안 센다.
+                continue
             total_items += 1
             if not line.is_problem:
                 if line.symbol == "✔":
@@ -333,7 +378,11 @@ def _compute_summary(results: list[dict], elapsed_seconds: float | None) -> dict
 
 def _render_json(results: list[dict], elapsed_seconds: float | None) -> None:
     summary = _compute_summary(results, elapsed_seconds)
-    exit_code_hint = 0 if all(r.get("verdict") == "PASS" for r in results) else 1
+    # 생략된 항목은 verdict 자체가 없다 — 판정에서 빼고 본다. 실제로는 생략이
+    # 기본 체크 FAIL일 때만 일어나 결과가 뒤집히진 않지만, "우연히 맞는" 상태를
+    # 남기지 않으려고 명시적으로 거른다(cli.md "결과 집계").
+    judged = [r for r in results if not _is_skipped(r)]
+    exit_code_hint = 0 if all(r.get("verdict") == "PASS" for r in judged) else 1
     payload = {
         "results": results,
         "summary": summary,
