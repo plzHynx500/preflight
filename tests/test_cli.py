@@ -10,7 +10,7 @@ runner = CliRunner()
 
 
 def test_check_command_exists() -> None:
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(app, ["check", "--help"])
     assert result.exit_code == 0
 
 
@@ -37,7 +37,12 @@ def test_check_exit_code_pass() -> None:
         patch("preflight.cli.judge_result", return_value=fake_res),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, [])
+        result = runner.invoke(
+            app,
+            [
+                "check",
+            ],
+        )
         assert result.exit_code == 0
 
 
@@ -54,7 +59,12 @@ def test_check_exit_code_fail() -> None:
         patch("preflight.cli.judge_result", return_value=fake_res),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, [])
+        result = runner.invoke(
+            app,
+            [
+                "check",
+            ],
+        )
         assert result.exit_code == 1
 
 
@@ -71,7 +81,12 @@ def test_check_exit_code_warn() -> None:
         patch("preflight.cli.judge_result", return_value=fake_res),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, [])
+        result = runner.invoke(
+            app,
+            [
+                "check",
+            ],
+        )
         assert result.exit_code == 2
 
 
@@ -96,7 +111,7 @@ def test_check_exit_code_yes_reverify_pass() -> None:
         patch("preflight.cli.reverify", return_value=fake_reverified),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 0
 
 
@@ -121,7 +136,7 @@ def test_check_exit_code_yes_reverify_warn() -> None:
         patch("preflight.cli.reverify", return_value=fake_reverified),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 2
 
 
@@ -146,5 +161,37 @@ def test_check_exit_code_yes_reverify_fail() -> None:
         patch("preflight.cli.reverify", return_value=fake_reverified),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["--yes"])
+        result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 1
+
+
+def test_cli_check_with_model_injects_gpu_state() -> None:
+    fake_state = {"free_mb": 10000, "total_mb": 12000}
+    fake_raw_basic = {"status": "ok", "env": {"dummy": 1}}
+    fake_raw_model = {"status": "ok", "env": {"dummy": 2}}
+
+    fake_basic_res = {"verdict": "PASS"}
+    fake_model_res = {"verdict": "PASS"}
+
+    def mock_run_canary_check(model_name, **kwargs):
+        if model_name is None:
+            return fake_raw_basic.copy()
+        return fake_raw_model.copy()
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=fake_state),
+        patch("preflight.cli.run_canary_check", side_effect=mock_run_canary_check),
+        patch(
+            "preflight.cli.judge_result", side_effect=[fake_basic_res, fake_model_res]
+        ) as mock_judge,
+        patch("preflight.cli.render_report"),
+    ):
+        result = runner.invoke(app, ["check", "--model", "dummy/model"])
+        assert result.exit_code == 0
+
+        assert mock_judge.call_count == 2
+        model_call_arg = mock_judge.call_args_list[1][0][0]
+        assert "env" in model_call_arg
+        assert model_call_arg["env"]["dummy"] == 2
+        assert model_call_arg["env"]["gpu_free_mb"] == 10000
+        assert model_call_arg["env"]["gpu_total_mb"] == 12000
