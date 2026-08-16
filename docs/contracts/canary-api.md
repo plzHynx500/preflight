@@ -66,7 +66,9 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 > raw["env"] = {**(raw.get("env") or {}), "gpu_free_mb": ..., "gpu_total_mb": ...}
 > ```
 >
-> **`setdefault("env", {})`를 쓰면 안 된다.** `_normalize()`가 모든 필드를 항상 만들기 때문에 `env`는 **키가 있고 값만 `None`인 상태**가 되는데, `setdefault`는 키 존재 여부만 보므로 `None`을 그대로 돌려준다 → `None.update(...)`로 **부모 프로세스가 죽는다.** 자식이 아예 안 돌아 부모가 결과를 직접 만드는 경로(기동 실패·타임아웃·결과 파일 없음)에서도 `env`는 `None`이므로, 병합 코드는 어떤 경우에도 `None`을 견뎌야 한다.
+> **`setdefault("env", {})`를 쓰면 안 된다.** `_normalize()`가 모든 필드를 항상 만들기 때문에 `env`는 **키가 있고 값만 `None`인 상태**가 되는데, `setdefault`는 키 존재 여부만 보므로 `None`을 그대로 돌려준다 → `None.update(...)`로 **부모 프로세스가 죽는다** — 하필 `import_crash`처럼 `env`가 비는 바로 그 상황에서, ADR-0002가 막으려던 것과 같은 종류로. 자식이 아예 안 돌아 부모가 결과를 직접 만드는 경로(기동 실패·타임아웃·결과 파일 없음)에서도 `env`는 `None`이므로, 병합 코드는 어떤 경우에도 `None`을 견뎌야 한다.
+>
+> (이 규칙 자체가 PR #26 리뷰 중 실측으로 정정된 것이다 — 처음 문서에 적혀 있던 `setdefault().update()`가 실제로 부모를 죽인다는 게 그때 확인됐다.)
 
 ### `rss_peak_mb` — 그 시점까지의 호스트 RAM 최고점
 
@@ -173,17 +175,9 @@ Z.ZGB)"를 판정과 같은 숫자로 보여주는 데 쓰인다.
 raw["env"] = {**(raw.get("env") or {}), "gpu_free_mb": state["free_mb"], "gpu_total_mb": state["total_mb"]}
 ```
 
-**반드시 병합이어야 한다 — 대입(`raw["env"] = {...}`)이 아니다.** `env`는 자식(canary,
-#19)과 부모(cli.py, 이 절)가 함께 채워 넣는 칸이다. 대입하면 자식이 먼저 채워둔 값
-(`torch_version`·`bnb_compiled_with_cuda` 등)이 통째로 사라진다. `raw.get("env") or {}`가
-자식이 아예 못 채운 경우(`env` 키가 있어도 값이 `None`인 경우 — subprocess 기동 실패·
-타임아웃·자식이 결과 없이 죽은 경우 전부 `_normalize()`가 `env`를 `None`으로 채운다)까지
-포함해 처리한다. `raw.setdefault("env", {}).update(...)`는 **틀린 형태다** — `setdefault`는
-키가 "있는지"만 보는데 `_normalize()`가 항상 모든 필드를 키로 만들어두므로, `env`가
-`None`인 채로 키만 있으면 `setdefault`가 그 `None`을 그대로 돌려주고 `.update()`가
-`AttributeError`로 부모 프로세스를 죽인다 — 하필 `import_crash`처럼 `env`가 비는 바로 그
-상황에서(ADR-0002가 막으려던 것과 같은 종류의 실패). 이 절이 실측(PR #26 리뷰, 상영님
-지적)으로 정정된 이력이다.
+**대입이 아니라 병합이다** — `raw["env"] = {...}`로 덮어쓰면 자식이 채운 값이 사라지고,
+`raw.setdefault("env", {}).update(...)`는 `env`가 `None`일 때 부모 프로세스를 죽인다.
+이유와 `env`가 `None`으로 오는 경로는 위 [`env` 절](#env--환경-사실) 참고.
 
 `env`가 없거나 `env.gpu_free_mb`가 없으면(NVML 조회
 실패 등) `judge_result`는 관련 WARN 판정을 조용히 건너뛴다 — 필수 입력이 아니다.
