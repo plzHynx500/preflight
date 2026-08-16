@@ -192,5 +192,6 @@ def test_cli_check_with_model_injects_gpu_state() -> None:
         assert mock_judge.call_count == 2
         model_call_arg = mock_judge.call_args_list[1][0][0]
         assert "env" in model_call_arg
+        assert model_call_arg["env"]["dummy"] == 2
         assert model_call_arg["env"]["gpu_free_mb"] == 10000
         assert model_call_arg["env"]["gpu_total_mb"] == 12000

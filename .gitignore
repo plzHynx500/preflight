@@ -223,3 +223,8 @@ __marimo__/
 # AI 에이전트 CLI의 로컬 상태 (개인 설정·임시 워크트리). 팀원마다 쓰는 도구가 달라
 # 저장소에 들어가면 안 된다 — AGENTS.md의 규칙 원본은 .agents/skills/ 쪽이다.
 .claude/
+
+# GitHub 이슈/PR 작성용 임시 파일
+issue_body*
+pr_body*
+
