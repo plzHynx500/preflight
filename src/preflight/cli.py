@@ -70,7 +70,13 @@ def check(
                 batch_size=batch_size or 1,
                 seq_len=seq_len or 8,
             )
-            # 2번째 모델 체크에는 gpu state를 다시 측정하지 않는다 (이미 canary가 점유를 시작했기 때문)
+            if state:
+                raw_model["env"] = {
+                    **(raw_model.get("env") or {}),
+                    "gpu_free_mb": state["free_mb"],
+                    "gpu_total_mb": state["total_mb"],
+                }
+            # 이미 잰 값을 그대로 쓴다 — 재측정하면 canary 자신의 점유만큼 깎여 오염된다
             model_res = judge_result(raw_model)
             results.append({**model_res, **meta})
 
