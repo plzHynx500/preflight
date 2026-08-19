@@ -35,7 +35,7 @@ def test_check_exit_code_pass() -> None:
     with (
         patch("preflight.cli.run_canary_check", return_value=fake_raw),
         patch("preflight.cli.judge_result", return_value=fake_res),
-        patch("preflight.cli.render_report"),
+        patch("preflight.cli.render_report") as mock_render,
     ):
         result = runner.invoke(
             app,
@@ -44,6 +44,12 @@ def test_check_exit_code_pass() -> None:
             ],
         )
         assert result.exit_code == 0
+
+        mock_render.assert_called_once()
+        kwargs = mock_render.call_args.kwargs
+        assert "elapsed_seconds" in kwargs
+        assert isinstance(kwargs["elapsed_seconds"], float)
+        assert kwargs["elapsed_seconds"] > 0
 
 
 def test_check_exit_code_fail() -> None:

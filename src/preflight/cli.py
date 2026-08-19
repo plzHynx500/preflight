@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import typer
 
 from preflight.canary.engine import run_canary_check
@@ -43,6 +45,8 @@ def check(
     json_output: bool = typer.Option(False, "--json", help="JSON 형식으로 결과 출력"),
 ) -> None:
     """docs/contracts/canary-api.md §5.4 전체 흐름을 따른다."""
+    start_time = time.monotonic()
+
     state = query_gpu_state()
 
     raw_basic = run_canary_check(
@@ -107,7 +111,8 @@ def check(
                 break
         verdict = reverified.get("verdict", "PASS")
 
-    render_report(results, json_output=json_output)
+    elapsed_seconds = time.monotonic() - start_time
+    render_report(results, json_output=json_output, elapsed_seconds=elapsed_seconds)
 
     exit_code = get_exit_code(verdict)
     if exit_code != 0:
