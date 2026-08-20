@@ -1,9 +1,12 @@
 [build-system]
-requires = ["hatchling"]
+# hatchling 1.28+는 Metadata-Version 2.5로 빌드하는데 PyPI가 아직 이 규격을
+# 거부한다(400 Bad Request — 플레이스홀더 선점 업로드에서 실측, #40). 2.4로
+# 빌드되는 버전대로 고정해야 정식 배포 업로드가 통과한다.
+requires = ["hatchling~=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "preflight-check"
+name = "preflight-gpu"
 version = "0.1.0"
 description = "파인튜닝을 시작하기 전, 지금 환경이 실제로 준비됐는지 확인하는 진단 CLI"
 readme = "readme.md"
