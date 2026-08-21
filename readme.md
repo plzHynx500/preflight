@@ -98,7 +98,7 @@ Preflight는 CI/CD 파이프라인이나 자동화 스크립트에서 프로그�
 |---|---|
 | 라이선스 | MIT — 재배포·임베딩 제약 없음 |
 | 지원 플랫폼 | Linux, Windows (네이티브) |
-| 설치 | `pip install preflight-check` |
+| 설치 | `pip install preflight-gpu` |
 
 ---
 
