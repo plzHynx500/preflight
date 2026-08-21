@@ -537,3 +537,105 @@ def test_render_report_fix_block_comes_after_all_check_blocks(capsys) -> None:
     out = capsys.readouterr().out
     assert out.index("모델 체크: meta-llama/Llama-3.1-8B") < out.index("FIX:")
     assert out.index("— 환경 체크 실패로 생략") < out.index("FIX:")
+
+
+# ── error_log 표시 (#43) ──────────────────────────────────────────────────────
+#
+# 파이썬 트레이스백은 진짜 원인(예외 타입·메시지)이 마지막 줄에 온다. 앞에서
+# 200자만 남기고 자르던 예전 방식은 그 줄을 항상 잘라내 파일 경로만 남겼다.
+
+_LONG_TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "/home/someone/preflight/src/preflight/canary/worker.py", line 77, in main\n'
+    "    torch = _import_canary_stack()\n"
+    '  File "/home/someone/preflight/src/preflight/canary/worker.py", line 61, '
+    "in _import_canary_stack\n"
+    "    import torch\n"
+    "ModuleNotFoundError: No module named 'torch'"
+)
+assert len(_LONG_TRACEBACK) > 200, "이 픽스처는 잘림 경로를 타야 의미가 있다"
+
+
+def test_render_report_long_error_log_keeps_last_line(capsys) -> None:
+    """잘리더라도 트레이스백의 마지막 줄(실제 예외)은 항상 화면에 남는다(#43)."""
+    raw = {**_OK_RAW, "status": "import_crash", "error_log": _LONG_TRACEBACK}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "ModuleNotFoundError: No module named 'torch'" in out
+    assert "…" in out
+
+
+def test_render_report_long_error_log_keeps_first_frame(capsys) -> None:
+    """단순 tail이 아니라 "무엇을 하다가 죽었는지"(첫 프레임)도 함께 남긴다."""
+    raw = {**_OK_RAW, "status": "import_crash", "error_log": _LONG_TRACEBACK}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out.replace("\n", "")  # rich가 폭에 맞춰 줄바꿈할 수 있다
+    assert "line 77, in main" in out
+    # 정보 없는 헤더 줄은 첫 프레임으로 건너뛴다.
+    assert "most recent call last" not in out
+
+
+def test_render_report_error_log_at_limit_is_untouched(capsys) -> None:
+    """경계값: 정확히 200자면 자르지 않고 전문이 나온다."""
+    log = "E" * 200
+    raw = {**_OK_RAW, "status": "error", "error_log": log}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out.replace("\n", "")  # rich가 폭에 맞춰 줄바꿈할 수 있다
+    assert log in out
+    assert "…" not in out
+
+
+def test_render_report_error_log_brackets_survive_rich_markup(capsys) -> None:
+    """error_log의 대괄호는 rich 마크업으로 먹히지 않는다.
+
+    engine이 크래시 로그에 "[stdout]"/"[stderr]" 라벨을 넣는데, 이스케이프 없이
+    rich에 넘기면 라벨이 조용히 사라지고(실측) "[/x]" 꼴은 MarkupError로 죽는다.
+    """
+    raw = {**_OK_RAW, "status": "error", "error_log": "[stderr]\nCUDA Setup failed [/bnb]"}
+
+    render_report([judge_result(raw)])  # MarkupError가 나면 여기서 터진다
+
+    out = capsys.readouterr().out
+    assert "[stderr]" in out
+    assert "CUDA Setup failed" in out
+
+
+# ── VRAM 실측값 단위 (#45) ────────────────────────────────────────────────────
+
+
+def test_render_report_vram_below_1gb_shown_in_mb(capsys) -> None:
+    """1GB 미만 실측값은 MB로 — `0.0GB`로 뭉개져 측정 실패처럼 보이지 않게(#45)."""
+    raw = {
+        **_MODEL_MODE_RAW,
+        "memory_delta_mb": 18.018,
+        "env": {"gpu_free_mb": 9420.0, "gpu_total_mb": 12282.0},
+    }
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "18MB / 9.2GB 가용 (총 12GB)" in out
+    assert "0.0GB" not in out
+
+
+def test_render_report_vram_unit_boundaries(capsys) -> None:
+    """경계값: 1GB 직전은 MB, 1GB 정각부터 GB, 1MB 미만은 <1MB. 1GB 이상은 기존 그대로."""
+    cases = [
+        (972.8, "973MB"),  # 0.95GB
+        (1024.0, "1.0GB"),
+        (0.3, "<1MB"),
+        (8600.0, "8.4GB"),  # 기존 동작 유지
+    ]
+    for memory_delta_mb, expected in cases:
+        raw = {**_MODEL_MODE_RAW, "memory_delta_mb": memory_delta_mb}
+
+        render_report([judge_result(raw)])
+
+        out = capsys.readouterr().out
+        assert f"{expected} 사용" in out, (memory_delta_mb, out)
