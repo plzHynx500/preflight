@@ -45,7 +45,7 @@ def check(
     json_output: bool = typer.Option(False, "--json", help="JSON 형식으로 결과 출력"),
 ) -> None:
     """docs/contracts/canary-api.md §5.4 전체 흐름을 따른다."""
-    start_time = time.monotonic()
+    start_time = time.perf_counter()
 
     state = query_gpu_state()
 
@@ -111,7 +111,7 @@ def check(
                 break
         verdict = reverified.get("verdict", "PASS")
 
-    elapsed_seconds = time.monotonic() - start_time
+    elapsed_seconds = time.perf_counter() - start_time
     render_report(results, json_output=json_output, elapsed_seconds=elapsed_seconds)
 
     exit_code = get_exit_code(verdict)
