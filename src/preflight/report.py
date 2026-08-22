@@ -27,6 +27,13 @@ _REASON_MESSAGES: dict[str, str] = {
 # 이 reason은 verdict(FAIL/WARN)와 무관한 정보성 표시라 문제 카운트에서 제외한다.
 _INFO_ONLY_REASONS = {"quant_fallback"}
 
+# status="error"이면서 error_log의 마지막 줄이 이 이름의 예외면 "원인 미상" 대신
+# 그 메시지를 표제로 쓴다(_known_error_headline 참고, #83). canary/model.py가
+# 원인을 확정할 수 있는 config 조회 실패에만 ModelConfigError를 쓴다(#62) — 여기서는
+# 그 사실을 재확인하지 않고 클래스 이름만 본다(huggingface_hub 판별과 같은 이유로
+# 이름 비교가 모듈 경로 이동에 더 안정적이다).
+_KNOWN_ERROR_CLASSES = {"ModelConfigError"}
+
 # --model 모드 전용 폴백 문구 (_quant_fallback_line 참고).
 _MODEL_MODE_QUANT_FALLBACK_MESSAGE = (
     "4bit 레이어 구성 실패 → fp32 전체 모델로 실측됨 (VRAM 수치가 QLoRA 기준보다 크다)"
@@ -90,11 +97,16 @@ def _status_line(result: dict) -> _Line:
     if status == "ok":
         return _Line("✔", "green", f"Canary 연산 실행    device={device} · 메모리 이동 확인됨")
 
-    reason_key = f"status_{status}"
-    message = _REASON_MESSAGES.get(reason_key, f"status={status} 감지 → 정상 실행 불가")
-    detail = result.get("error_log")
-    if detail:
-        detail = _truncate_error_log(str(detail))
+    error_log = result.get("error_log")
+    detail = _truncate_error_log(str(error_log)) if error_log else None
+
+    message = None
+    if status == "error" and error_log:
+        message = _known_error_headline(str(error_log))
+    if message is None:
+        reason_key = f"status_{status}"
+        message = _REASON_MESSAGES.get(reason_key, f"status={status} 감지 → 정상 실행 불가")
+
     return _Line("✖", "red", f"Canary 연산 실행    {message}", detail=detail, is_problem=True)
 
 
@@ -157,6 +169,25 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
 #: 뒤에 곧바로 ": "가 오는 줄. 소스 코드 줄이나 "Repository Not Found for url: ..."
 #: 같은 설명 줄은 이름 자리에 공백이 있어 걸리지 않는다.
 _EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit): ")
+
+
+def _known_error_headline(error_log: str) -> str | None:
+    """error_log의 마지막 줄이 원인-확정 예외(`_KNOWN_ERROR_CLASSES`)면 그 메시지를,
+    아니면 None을 돌려준다(#83).
+
+    model.py의 `ModelConfigError`는 `raise ... from None`으로 체인을 끊으므로(#62)
+    error_log(`traceback.format_exc()`)의 **마지막 줄**이 곧 그 예외 줄이다 — 앞쪽
+    프레임까지 뒤질 필요가 없다. 모르는 예외는 표제를 "원인 미상"인 채로 두고
+    바로 아래 detail(전체 로그)에서만 원인을 보여준다.
+    """
+    last_line = error_log.strip().splitlines()[-1].strip()
+    if not _EXCEPTION_LINE.match(last_line):
+        return None
+    qualname, message = last_line.split(": ", 1)
+    class_name = qualname.rsplit(".", 1)[-1]
+    if class_name not in _KNOWN_ERROR_CLASSES:
+        return None
+    return message
 
 
 def _select_tail(lines: list[str], tail_budget: int, min_start: int = 0) -> str:
