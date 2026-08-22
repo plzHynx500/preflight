@@ -169,10 +169,18 @@ $ preflight check --json
       "error_log": null,
       "verdict": "FAIL",
       "reasons": ["quant_layer_device_cpu"],
+      "env": {
+        "torch_version": "2.13.0+cpu",
+        "torch_cuda_version": null,
+        "bnb_compiled_with_cuda": null,
+        "bnb_cpu_4bit_supported": null,
+        "gpu_free_mb": 9420.0,
+        "gpu_total_mb": 12282.0
+      },
       "fix": {
-        "cause": "bnb_not_compiled_with_cuda",
-        "message": "bitsandbytes가 CUDA 지원 없이 빌드됨",
-        "fix_command": "pip install bitsandbytes --upgrade --force-reinstall"
+        "cause": "torch_cpu_only_build",
+        "message": "설치된 torch가 CPU 전용 빌드다 (torch.version.cuda 없음) — NVIDIA GPU는 감지됐으므로 CUDA 빌드 torch로 재설치하면 GPU를 쓸 수 있다",
+        "fix_command": "pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu124"
       }
     }
   ],
