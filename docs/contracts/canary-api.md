@@ -49,10 +49,16 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 "env": {
     "torch_version": "2.11.0+cu128",
     "torch_cuda_version": "12.8",       # None이면 torch가 CPU 전용 빌드
-    "bnb_compiled_with_cuda": True,
+    "bnb_compiled_with_cuda": True,     # 빌드 속성이 아니다 — 아래 경고 참고
     "bnb_cpu_4bit_supported": True,     # 4bit을 실제로 시도한 경우에만. 아니면 None
 }
 ```
+
+> **`bnb_compiled_with_cuda`는 이름과 달리 빌드 속성이 아니다 (#72, 2026-08-22 실측).** `bitsandbytes.cextension.lib.compiled_with_cuda`는 bitsandbytes 0.50 기준으로 **런타임에 CUDA 장치가 보이는지**에 따라 값이 바뀐다 — CUDA torch·bitsandbytes가 모두 정상인 RTX 4070 Ti에서 `CUDA_VISIBLE_DEVICES=-1`만 붙이면 같은 설치본이 `True` → `False`가 된다. 즉 이 값이 `False`라고 해서 "CUDA 없이 빌드된 bitsandbytes"라고 단정할 수 없고, 재설치를 권하면 아무것도 고쳐지지 않는다.
+>
+> 그래서 **원인 분류는 이 값을 단독 근거로 쓰지 않는다.** `torch_cuda_version`(torch가 CUDA 빌드인가)과 `gpu_free_mb`(NVML이 GPU를 조회했는가)를 먼저 보고, 그 둘을 모두 못 읽었을 때의 마지막 폴백으로만 참고한다([`suggest_fix`](#suggest_fix) 절 참고). 필드 이름과 수집 방식은 하위 호환을 위해 유지한다 — 바뀌는 것은 **읽는 쪽의 해석**이다.
+>
+> 구버전 bitsandbytes에서는 진짜 빌드 속성이었을 가능성이 있다. 그렇다면 이 값은 **버전에 따라 뜻이 달라지는 신호**라는 뜻이므로, 단독 판단 근거로 쓰지 않는다는 결론은 어느 쪽이든 같다.
 
 **자식이 읽어야 한다.** 이 값들을 읽으려면 `torch`·`bitsandbytes`를 import해야 하는데, 진단 대상이 바로 *"그 import가 죽는 환경"* 이다. 부모가 읽으면 원인을 확인하려다 CLI까지 함께 죽어 FR-03 격리가 무너진다([ADR-0002](../adr/0002-subprocess-isolation-for-canary.md), Issue #19).
 
@@ -230,7 +236,16 @@ def suggest_fix(check_result: dict) -> dict | None:
     }
 ```
 
-`reasons`만으로 충분한 경우(WARN 두 개, OOM)는 바로 fix 문구로 이어지고, `import_crash`나 `device=cpu`처럼 원인이 여러 갈래인 경우는 `error_log`나 `env.bnb_compiled_with_cuda` 같은 부가 정보를 추가로 조회해서 확정한다. **이 부가 정보를 직접 import해서 알아내면 안 된다** — 자식이 `env`에 실어 보낸 값을 읽어야 한다(위 `env` 절 참고). 실제 실행(`--yes`일 때)은 이 함수 밖, FixExecutor에 있다.
+`reasons`만으로 충분한 경우(WARN 두 개, OOM)는 바로 fix 문구로 이어지고, `import_crash`나 `device=cpu`처럼 원인이 여러 갈래인 경우는 `error_log`나 `env` 같은 부가 정보를 추가로 조회해서 확정한다. **이 부가 정보를 직접 import해서 알아내면 안 된다** — 자식이 `env`에 실어 보낸 값을 읽어야 한다(위 `env` 절 참고). 실제 실행(`--yes`일 때)은 이 함수 밖, FixExecutor에 있다.
+
+**갈래를 가르는 순서는 신호의 신뢰도 순이다.** `fix_command`가 붙는 원인은 곧 `--yes`가 실제로 실행하는 명령이므로, 근거가 약한 신호로 앞질러 확정하면 사용자 환경에 무관한 변경이 실행된다(#51·#55·#72가 전부 이 유형의 버그였다).
+
+| 갈래 | 판정 순서 | cause |
+|---|---|---|
+| `import_crash` | `error_log`에 `bitsandbytes` 문자열이 있을 때만 bnb 문제로 본다. cuda라는 글자만으로는 아니다(#51) | `bnb_not_compiled_with_cuda` / `import_crash_general` |
+| `device=cpu` 폴백 | ① `torch_cuda_version`(CPU 전용 빌드인가) → ② `gpu_free_mb`(NVML이 GPU를 봤는가) → ③ `bnb_compiled_with_cuda`(①②를 못 읽었을 때만) | `torch_cpu_only_build` / `torch_cpu_only_build_no_gpu` / `no_nvidia_gpu_or_driver` / `cuda_device_not_visible` / `bnb_not_compiled_with_cuda` / `4bit_cpu_fallback_other` |
+
+`env`의 속성을 **못 읽은 것**과 그 속성이 **아닌 것**은 다르다 — `torch_version`이 `None`인데 `torch_cuda_version`도 `None`인 것은 "CPU 전용 빌드"가 아니라 "수집 실패"다. 수집 실패를 원인으로 읽으면 멀쩡한 환경에 재설치를 권하게 된다.
 
 ## 전체 흐름
 
