@@ -324,3 +324,126 @@ def test_model_path_actually_applies_4bit_with_real_libraries() -> None:
 
     linear4bit_count = sum(1 for m in model.modules() if isinstance(m, bnb.nn.Linear4bit))
     assert linear4bit_count > 0, "Linear4bit 레이어가 하나도 없다 — 양자화가 실제로 안 걸린 것"
+
+
+# ── config 조회 실패 메시지 (#62) ─────────────────────────────────────────────
+#
+# HF Hub는 없는 저장소에도 404가 아니라 401을 돌려준다. 그 401이 3단 체인으로
+# 올라오면 error_log가 57줄이 되고 화면에는 "private repository … token"만 남아,
+# 모델명을 잘못 친 사용자가 토큰을 찾으러 간다. 아는 원인은 여기서 확정한다.
+
+
+def _config_error(monkeypatch, exc: Exception):
+    """AutoConfig.from_pretrained이 주어진 예외로 실패하는 transformers를 끼운다."""
+
+    class _RaisingAutoConfig:
+        @staticmethod
+        def from_pretrained(model_name):
+            raise exc
+
+    monkeypatch.setitem(
+        sys.modules, "transformers", types.SimpleNamespace(AutoConfig=_RaisingAutoConfig)
+    )
+
+
+def _make_error(name: str, message: str, base=OSError) -> Exception:
+    """huggingface_hub을 설치하지 않고 그 예외 타입 이름만 흉내 낸다."""
+    return type(name, (base,), {})(message)
+
+
+def test_load_config_repository_not_found_says_model_not_found(monkeypatch) -> None:
+    from preflight.canary.model import ModelConfigError, _load_config
+
+    _config_error(
+        monkeypatch,
+        _make_error("RepositoryNotFoundError", "401 Client Error. (Request ID: Root=1-68a)"),
+    )
+
+    with pytest.raises(ModelConfigError) as exc_info:
+        _load_config("this-org-does-not-exist/definitely-not-a-model")
+
+    message = str(exc_info.value)
+    assert "모델을 찾을 수 없음" in message
+    assert "this-org-does-not-exist/definitely-not-a-model" in message
+    assert "401" not in message and "token" not in message
+    # 체인을 끊어야 traceback.format_exc()가 3단 트레이스백을 다시 찍지 않는다.
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
+
+
+def test_load_config_final_oserror_text_also_matches(monkeypatch) -> None:
+    """hf_hub 예외 타입이 아니라 transformers의 최종 OSError로 올라오는 경우도 잡는다."""
+    from preflight.canary.model import ModelConfigError, _load_config
+
+    _config_error(
+        monkeypatch,
+        OSError(
+            "this-org/nope is not a local folder and is not a valid model identifier "
+            "listed on 'https://huggingface.co/models'\nIf this is a private repository, "
+            "make sure to pass a token"
+        ),
+    )
+
+    with pytest.raises(ModelConfigError) as exc_info:
+        _load_config("this-org/nope")
+
+    assert "모델을 찾을 수 없음" in str(exc_info.value)
+
+
+def test_load_config_gated_repo_keeps_token_guidance(monkeypatch) -> None:
+    """접근 제한 모델은 **진짜로** 토큰이 필요하다 — 그 안내는 여기서만 나온다."""
+    from preflight.canary.model import ModelConfigError, _load_config
+
+    _config_error(monkeypatch, _make_error("GatedRepoError", "403 Client Error"))
+
+    with pytest.raises(ModelConfigError) as exc_info:
+        _load_config("meta-llama/Llama-3.1-8B")
+
+    message = str(exc_info.value)
+    assert "접근이 제한된" in message
+    assert "권한" in message
+
+
+def test_load_config_offline_cache_miss_says_network(monkeypatch) -> None:
+    """오프라인 + 캐시 미스는 모델명 문제가 아니라 네트워크 문제로 안내한다(#62)."""
+    from preflight.canary.model import ModelConfigError, _load_config
+
+    _config_error(
+        monkeypatch,
+        _make_error(
+            "LocalEntryNotFoundError",
+            "Cannot reach huggingface.co: Check your internet connection or see how to "
+            "run the library in offline mode.",
+        ),
+    )
+
+    with pytest.raises(ModelConfigError) as exc_info:
+        _load_config("meta-llama/Llama-3.1-8B")
+
+    message = str(exc_info.value)
+    assert "네트워크" in message
+    assert "캐시" in message
+
+
+def test_load_config_unknown_failure_is_reraised_untouched(monkeypatch) -> None:
+    """모르는 실패를 오타로 단정하지 않는다 — 그게 이 이슈의 버그였다(#62)."""
+    from preflight.canary.model import ModelConfigError, _load_config
+
+    original = ValueError("Unrecognized model in some-org/some-model")
+    _config_error(monkeypatch, original)
+
+    with pytest.raises(ValueError) as exc_info:
+        _load_config("some-org/some-model")
+
+    assert exc_info.value is original
+    assert not isinstance(exc_info.value, ModelConfigError)
+
+
+def test_build_dummy_model_surfaces_config_error(fake_bitsandbytes, monkeypatch) -> None:
+    """build_dummy_model이 config 실패를 그대로 올린다 — 모델 구성 단계로 넘어가지 않는다."""
+    from preflight.canary.model import ModelConfigError, build_dummy_model
+
+    _config_error(monkeypatch, _make_error("RepositoryNotFoundError", "401 Client Error"))
+
+    with pytest.raises(ModelConfigError):
+        build_dummy_model("this-org-does-not-exist/definitely-not-a-model", device="cpu")

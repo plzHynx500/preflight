@@ -70,11 +70,80 @@ def build_dummy_model(model_name: str, device: str = "cuda"):
     4bit 가중치는 uint8로 packed되어 `numel()` 기준 파라미터 수가 실제의 절반으로
     보인다 — 리포트에 파라미터 수를 찍을 일이 있으면 `config`에서 계산해야 한다.
     """
-    from transformers import AutoConfig
-
-    config = AutoConfig.from_pretrained(model_name)
+    config = _load_config(model_name)
     model, quant_backend = _build_qlora_model(config, device)
     return model, config, quant_backend
+
+
+class ModelConfigError(RuntimeError):
+    """config 조회 실패 중 **원인을 특정할 수 있는** 경우에만 쓴다.
+
+    worker가 이 예외를 traceback으로 포장해 `error_log`에 담고, 리포트가 그 꼬리를
+    화면에 보여준다 — 그래서 메시지 자체가 사용자에게 그대로 읽힌다(#62).
+    """
+
+
+def _load_config(model_name: str):
+    """`AutoConfig.from_pretrained()` — 실패 원인을 사용자가 읽을 수 있는 말로 바꾼다.
+
+    HF Hub는 **없는 저장소에도 404가 아니라 401을 돌려준다.** transformers가 그
+    401을 3단으로 체인해서 올리면 error_log가 57줄이 되고, 화면에는 마지막 줄인
+    "If this is a private repository, make sure to pass a token…"만 남는다 —
+    모델명을 잘못 친 사용자가 토큰을 찾으러 가는 결과가 된다(#62 실측).
+
+    그래서 여기서 원인을 확정해 짧은 로그로 바꾼다. `from None`으로 체인을 끊는
+    것이 핵심이다 — 원본 예외를 `__cause__`로 달아두면 `traceback.format_exc()`가
+    3단 체인을 그대로 다시 찍어 고친 의미가 없어진다. 원본 체인은 `--json`에서도
+    사라지지만, 버리는 것은 **이미 우리가 원인을 아는** 경우의 401·token 잡음뿐이다
+    (#62의 요지가 그 잡음이 사용자를 엉뚱한 곳으로 보낸다는 것이었다).
+
+    **모르는 실패는 건드리지 않고 그대로 올린다.** 오타로 단정하는 것이 이 이슈의
+    버그였으므로, 시그니처가 맞는 경우에만 말을 바꾼다.
+    """
+    from transformers import AutoConfig
+
+    try:
+        return AutoConfig.from_pretrained(model_name)
+    except Exception as exc:  # 아는 원인만 말을 바꾸고, 나머지는 아래에서 그대로 올린다
+        message = _config_error_message(model_name, exc)
+        if message is None:
+            raise
+        raise ModelConfigError(message) from None
+
+
+def _config_error_message(model_name: str, exc: Exception) -> str | None:
+    """알려진 config 조회 실패면 한국어 한 줄, 아니면 None.
+
+    huggingface_hub을 import하지 않고 **예외 타입 이름**으로 판별한다 — 부모가 아닌
+    자식 프로세스라 import 자체는 가능하지만, hf_hub은 하드 의존성이 아니고 예외
+    클래스의 위치가 버전마다 옮겨 다녀서(`huggingface_hub.utils` →
+    `huggingface_hub.errors`) 이름 비교가 오히려 안정적이다.
+    """
+    names = {base.__name__ for base in type(exc).__mro__}
+    text = str(exc)
+
+    if "GatedRepoError" in names:
+        return (
+            f"접근이 제한된 모델: {model_name}"
+            " (HF Hub에서 라이선스 동의 또는 접근 권한이 필요하다 — hf auth login)"
+        )
+    if "RepositoryNotFoundError" in names or "is not a valid model identifier" in text:
+        return (
+            f"모델을 찾을 수 없음: {model_name}"
+            " (HF Hub에 해당 저장소 없음 — 모델명 오타 또는 비공개 저장소)"
+        )
+    if "HFValidationError" in names:
+        return f"모델명 형식이 올바르지 않음: {model_name} (기대 형식: <org>/<name>)"
+    if (
+        "LocalEntryNotFoundError" in names
+        or "OfflineModeIsEnabled" in names
+        or "Check your internet connection" in text
+    ):
+        return (
+            f"네트워크에 연결할 수 없고 로컬 캐시에도 없음: {model_name}"
+            " (config.json을 받지 못했다 — 연결 확인 후 다시 실행)"
+        )
+    return None
 
 
 def _build_qlora_model(config, device: str):
