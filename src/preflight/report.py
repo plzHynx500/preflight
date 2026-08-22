@@ -130,9 +130,13 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
     if head.startswith("Traceback (most recent call last)") and len(lines) > 1:
         head = lines[1]
     head = head.strip()
-    head_budget = 80
+    # 들여쓰기 4칸 + 이 줄이 80칸 콘솔에 들어와야 한다 — 넘치면 rich가 "…"로 잘라
+    # 또 줄 번호가 사라진다(QA 실측, #56).
+    head_budget = 72
     if len(head) > head_budget:
-        head = head[: head_budget - 1] + "…"
+        # 프레임 줄은 정보가 뒤에 있다(파일명·줄 번호·함수명) — 앞을 남기면 긴
+        # 설치 경로에선 사용자 홈 경로 조각만 남고 정작 필요한 끝이 잘린다(#56).
+        head = "…" + head[-(head_budget - 1) :]
 
     tail_budget = max(max_chars - len(head) - 1, 40)
     last_line = lines[-1].strip()
@@ -415,7 +419,9 @@ def _render_text(results: list[dict], elapsed_seconds: float | None) -> None:
             if line.detail:
                 # error_log는 자유 텍스트라 "[stderr]" 같은 대괄호가 rich 마크업으로
                 # 먹혀 사라지거나(실측), "[/x]" 꼴이면 MarkupError로 죽는다 — escape한다.
-                console.print(f"    [dim]{escape(line.detail)}[/dim]")
+                # overflow="fold": 폭을 넘는 긴 경로를 "…"로 잘라내지 않고 접는다 — 글자를
+                # 버리면 파일명·줄 번호가 사라진다(#56).
+                console.print(f"    [dim]{escape(line.detail)}[/dim]", overflow="fold")
 
     # FIX 블록은 개별 체크 블록 사이가 아니라 **전부 그린 뒤 한 번에** 나온다
     # (cli.md "출력 예시"). 체크 블록 사이에 끼면 "무엇이 문제인가"를 읽는 흐름이

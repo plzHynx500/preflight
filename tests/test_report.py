@@ -726,3 +726,26 @@ def test_render_report_short_error_log_has_no_truncation_note(capsys) -> None:
 
     out = capsys.readouterr().out
     assert "일부만" not in out
+
+
+def test_render_report_long_path_first_frame_keeps_file_and_line(capsys) -> None:
+    """첫 프레임 줄이 길면 **뒤**(파일명·줄 번호·함수명)를 남긴다(#56).
+
+    실제 설치 경로(venv 안 site-packages)는 거의 항상 80자를 넘는다. 앞을 남기면
+    사용자 홈 경로 조각만 남고 "어느 파일 몇 번째 줄에서 죽었는지"가 사라졌다
+    (QA 실측: `File "C:/Users/.../C--Users-bells-OneDrive---------…`).
+    """
+    log = (
+        "Traceback (most recent call last):\n"
+        '  File "/home/someone/very/long/virtualenv/path/that/keeps/going/lib/python3.11/'
+        'site-packages/preflight/canary/worker.py", line 77, in main\n'
+        "    torch = _import_canary_stack()\n"
+        "ModuleNotFoundError: No module named 'torch'"
+    )
+    raw = {**_OK_RAW, "status": "import_crash", "error_log": log}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out.replace("\n", "")
+    assert 'worker.py", line 77, in main' in out
+    assert "ModuleNotFoundError: No module named 'torch'" in out
