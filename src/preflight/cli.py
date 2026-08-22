@@ -34,10 +34,18 @@ def ensure_utf8_streams() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
+# 모듈 임포트 시점에 실행한다 — @app.callback()에 두면 Click이 최상위(그룹)
+# --help를 콜백 실행 전에 처리하고 종료해, `preflight --help`를 리다이렉트할 때
+# 콜백을 한 번도 안 거치고 rich 도움말 상자의 박스 문자에서 그대로 죽는다(#89).
+# 서브커맨드(`check --help`)는 그룹 콜백이 먼저 돌아 우연히 살아났던 것뿐이다.
+# 부작용이 스트림 인코딩 재설정뿐이고 `reconfigure` 존재 여부도 가드하므로
+# 임포트 시점 실행이 안전하다.
+ensure_utf8_streams()
+
+
 @app.callback()
 def callback() -> None:
     """Preflight CLI."""
-    ensure_utf8_streams()
 
 
 def get_exit_code(verdict: str) -> int:
