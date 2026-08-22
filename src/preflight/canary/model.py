@@ -58,10 +58,12 @@ def build_dummy_model(model_name: str, device: str = "cuda"):
 
     4bit 구성이 실패하면(bitsandbytes 미설치·구버전 등) `build_minimal_canary_model`과
     동일한 폴백 철학으로 평범한 fp32 전체 모델로 대체하고 그 사실을 `quant_backend`로
-    알린다 — 실패해도 여기서 죽지 않는다. 단 폴백 시 RAM에 fp32 전체 모델이 통째로
-    올라가므로(8B 기준 약 30GB), 실제로 이 경로를 타는 대형 모델은 canary 도구 자체가
-    먼저 죽을 수 있다 — 이는 "4bit이 안 되는 환경"이라는 신호로서는 유효하지만,
-    쾌적하게 죽지는 않는다는 뜻이다(별도 개선 여지, 지금 범위 밖).
+    알린다 — 실패해도 여기서 죽지 않는다. **폴백 모델도 `device`가 가리키는 곳으로
+    올린다**(#66) — 안 올리면 입력과 device가 어긋나 폴백이 발동하는 순간 오히려
+    RuntimeError로 죽어, 안전장치가 없는 것과 같아진다. 단 폴백 시 fp32 전체 모델이
+    RAM/VRAM에 통째로 올라가므로(8B 기준 약 30GB), 실제로 이 경로를 타는 대형 모델은
+    canary 도구 자체가 먼저 죽을 수 있다 — 이는 "4bit이 안 되는 환경"이라는 신호로서는
+    유효하지만, 쾌적하게 죽지는 않는다는 뜻이다(별도 개선 여지, 지금 범위 밖).
 
     `(model, config, quant_backend)`를 돌려준다 — `config`는 `build_dummy_input()`이
     토큰 ID를 만들 때 필요한 `vocab_size`를 담고 있고(docs/contracts/canary-api.md
@@ -96,6 +98,16 @@ def _build_qlora_model(config, device: str):
         from transformers import AutoModelForCausalLM
 
         model = AutoModelForCausalLM.from_config(config)
+        # 폴백 모델도 **요청받은 device로 올린다**. 빼먹으면 모델만 CPU에 남아,
+        # 같은 device로 만들어진 입력(cuda)과 어긋나 forward에서 RuntimeError로
+        # 죽는다 — 폴백은 "bitsandbytes가 없어도 진단은 계속한다"는 안전장치인데
+        # 발동하는 순간 도구가 부서졌다(#66). 형제 함수 build_minimal_canary_model도
+        # 같은 이유로 무조건 .to(device)를 부른다.
+        #
+        # torch를 다시 import하지 않고 device 문자열을 그대로 넘긴다 — 이 분기는
+        # `import torch` 실패로도 들어올 수 있어서, 여기서 torch를 또 부르면 폴백
+        # 자체가 같은 이유로 죽는다. nn.Module.to()는 문자열을 그대로 받는다.
+        model = model.to(device)
         return model, QUANT_BACKEND_FALLBACK
 
 

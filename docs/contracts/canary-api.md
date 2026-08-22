@@ -134,9 +134,25 @@ RTX 4070 Ti·8B급 모델 기준 RAM 피크 1.75GB·VRAM 최고점 5.77GB로 실
 4bit 구성이 실패하면(bitsandbytes 미설치·구버전, `replace_with_bnb_linear`가 향후
 transformers 버전에서 사라지는 경우 등) `build_minimal_canary_model`과 동일한 폴백
 철학으로 fp32 전체 모델로 대체하고 `quant_backend="nn-linear-fallback"`으로 알린다.
-단 이 폴백은 fp32 전체 모델이 RAM에 통째로 올라가므로(8B 기준 약 30GB) canary 도구
-자체가 진단을 시작하기 전에 먼저 죽을 수 있다 — "4bit이 안 되는 환경"이라는 신호로는
-유효하지만 쾌적하게 죽지는 않는다(개선 여지, 지금 범위 밖).
+
+**폴백 모델도 `device`가 가리키는 곳으로 옮긴다** — 4bit 경로든 폴백 경로든 `device`
+파라미터의 의미는 같다(#66). 이걸 빼먹으면 폴백 모델만 CPU에 남아, 호출자가 같은
+`device`로 만든 입력(cuda)과 어긋나 `RuntimeError: Expected all tensors to be on the
+same device`로 죽는다 — 폴백은 "bitsandbytes가 없어도 진단은 계속한다"는 안전장치인데
+발동하는 순간 도구가 부서지므로 안전장치가 없는 것과 같아진다. GPU에 두는 대신 CPU에
+두는 대안도 검토했으나, 그러면 `device=cpu`가 그대로 FAIL 판정("GPU가 죽었다")이 되어
+더 나쁜 오진을 내고 `--model`의 존재 이유인 VRAM 실측도 통째로 잃는다.
+
+단 이 폴백은 fp32 전체 모델이 RAM/VRAM에 통째로 올라가므로(8B 기준 약 30GB, 게다가
+베이스를 얼리지 않아 gradient·옵티마이저 상태까지 붙는다) canary 도구 자체가 진단을
+마치기 전에 먼저 죽을 수 있다 — "4bit이 안 되는 환경"이라는 신호로는 유효하지만
+쾌적하게 죽지는 않는다(개선 여지, 지금 범위 밖 — #75).
+
+폴백 모델은 베이스를 얼리지도 LoRA를 붙이지도 않아 **모든 파라미터가
+`requires_grad=True`** 다. `worker._base_layer_device()`가 "얼린 베이스 레이어"를 찾아
+`device` 필드를 채우므로, 얼린 파라미터가 하나도 없으면 첫 파라미터의 device로 물러선다 —
+그러지 않으면 이 경로에서만 `device`가 `None`이 되어 화면에 `device=None`이 찍히고
+`judge_result`의 `device=="cpu"` FAIL 규칙도 발동하지 못한다(#66).
 
 4bit 가중치는 uint8로 packed되어 `numel()` 기준 파라미터 수가 실제의 절반으로 보인다
 — 리포트에 파라미터 수를 찍을 일이 있으면 `config`에서 계산해야 한다.
