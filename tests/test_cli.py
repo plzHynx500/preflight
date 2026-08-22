@@ -191,6 +191,99 @@ def test_check_exit_code_yes_reverify_fail() -> None:
         assert result.exit_code == 1
 
 
+def test_check_yes_reverify_runs_previously_skipped_model_check() -> None:
+    """기본 체크가 FAIL → 모델 체크 생략 → --yes로 기본 체크가 PASS로 뒤집히면,
+    생략됐던 모델 체크를 이어서 실행하고 그 판정까지 exit code에 반영한다(#84).
+
+    수정 전에는 기본 체크만 재확인하고 모델 체크는 skipped로 남아, 모델을 한 번도
+    확인한 적이 없는데 exit code가 0이 되는 문제가 있었다.
+    """
+    fake_raw_basic = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA error"}
+    fake_basic_initial = {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["import_crash"],
+        "error_log": "libbitsandbytes_cpu.so: CUDA error",
+    }
+    fake_reverified = {"status": "ok", "device": "cuda", "verdict": "PASS", "reasons": []}
+    fake_raw_model = {"status": "oom"}
+    # 이어서 실행된 모델 체크가 FAIL이면, 기본 체크가 PASS로 뒤집혔더라도 최종
+    # exit code는 그 FAIL을 반영해야 한다 — 그러지 않으면 이 이슈가 재발한다.
+    fake_model_res = {
+        "status": "oom",
+        "device": "cuda",
+        "verdict": "FAIL",
+        "reasons": ["status_oom"],
+    }
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch(
+            "preflight.cli.run_canary_check", side_effect=[fake_raw_basic, fake_raw_model]
+        ) as mock_run,
+        patch(
+            "preflight.cli.judge_result", side_effect=[fake_basic_initial, fake_model_res]
+        ) as mock_judge,
+        patch("preflight.cli.apply_fix"),
+        patch("preflight.cli.reverify", return_value=fake_reverified),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        result = runner.invoke(app, ["check", "--model", "dummy/model", "--yes"])
+
+    assert mock_run.call_count == 2
+    assert mock_judge.call_count == 2
+    assert result.exit_code == 1
+
+    results = mock_render.call_args.args[0]
+    assert "skipped" not in results[1]
+    assert results[1]["verdict"] == "FAIL"
+    assert results[1]["model_name"] == "dummy/model"
+
+    notices = mock_render.call_args.kwargs["notices"]
+    assert any("이어서 실행" in notice for notice in notices)
+
+
+def test_check_yes_reverify_still_fail_leaves_model_check_skipped() -> None:
+    """기본 체크 재확인이 여전히 FAIL이면 모델 체크는 실행하지 않는다(#84).
+
+    수십 초가 드는 모델 canary를 어차피 fail-fast로 다시 생략될 상황에서까지
+    돌리지 않는다.
+    """
+    fake_raw_basic = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA error"}
+    fake_basic_initial = {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["import_crash"],
+        "error_log": "libbitsandbytes_cpu.so: CUDA error",
+    }
+    fake_reverified = {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["import_crash"],
+        "error_log": "libbitsandbytes_cpu.so: CUDA error",
+    }
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", side_effect=[fake_raw_basic]) as mock_run,
+        patch("preflight.cli.judge_result", side_effect=[fake_basic_initial]) as mock_judge,
+        patch("preflight.cli.apply_fix"),
+        patch("preflight.cli.reverify", return_value=fake_reverified),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        result = runner.invoke(app, ["check", "--model", "dummy/model", "--yes"])
+
+    assert mock_run.call_count == 1
+    assert mock_judge.call_count == 1
+    assert result.exit_code == 1
+
+    results = mock_render.call_args.args[0]
+    assert results[1].get("skipped") == "환경 체크 실패"
+
+    notices = mock_render.call_args.kwargs["notices"]
+    assert not any("이어서 실행" in notice for notice in notices)
+
+
 def test_cli_check_with_model_injects_gpu_state() -> None:
     fake_state = {"free_mb": 10000, "total_mb": 12000}
     fake_raw_basic = {"status": "ok", "env": {"dummy": 1}}

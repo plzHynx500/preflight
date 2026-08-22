@@ -111,6 +111,10 @@ def test_cli_yes_reverifies_the_check_that_produced_the_fix() -> None:
     기본 체크가 FAIL이면 모델 체크는 fail-fast로 아예 돌지 않는다. 예전에는
     `--model`이 주어졌다는 이유만으로 그 한 번도 실행된 적 없는 모델 canary를
     재확인에서 돌렸고, 정작 고쳤는지 봐야 할 기본 체크는 다시 돌지 않았다.
+
+    기본 체크 재확인이 PASS로 뒤집힌 뒤에는, fail-fast로 생략됐던 모델 체크를
+    이어서 실행한다(#84) — 그러지 않으면 모델을 한 번도 확인한 적이 없는데
+    exit code만 0이 되는, 이 테스트가 원래 검증하던 것과는 다른 새 버그가 된다.
     """
     fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
     fake_initial = {
@@ -125,10 +129,17 @@ def test_cli_yes_reverifies_the_check_that_produced_the_fix() -> None:
         "verdict": "PASS",
         "reasons": [],
     }
+    fake_raw_model = {"status": "ok"}
+    fake_model_res = {"status": "ok", "device": "cuda", "verdict": "PASS", "reasons": []}
 
     with (
-        patch("preflight.cli.run_canary_check", return_value=fake_raw),
-        patch("preflight.cli.judge_result", return_value=fake_initial),
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch(
+            "preflight.cli.run_canary_check", side_effect=[fake_raw, fake_raw_model]
+        ) as mock_run,
+        patch(
+            "preflight.cli.judge_result", side_effect=[fake_initial, fake_model_res]
+        ),
         patch("preflight.cli.apply_fix") as mock_apply_fix,
         patch("preflight.cli.reverify", return_value=fake_reverified) as mock_reverify,
         patch("preflight.cli.render_report") as mock_render,
@@ -144,11 +155,16 @@ def test_cli_yes_reverifies_the_check_that_produced_the_fix() -> None:
             batch_size=1,
             seq_len=8,
         )
+        # 기본 체크(초기 1회) + 생략됐던 모델 체크(재확인 후 이어서 1회) = 2회.
+        assert mock_run.call_count == 2
         assert mock_render.call_count == 1
-        rendered_data = mock_render.call_args[0][0][0]
-        assert rendered_data["reverified"] is True
-        assert rendered_data["verdict"] == "PASS"
-        assert rendered_data["status"] == "ok"
+        results = mock_render.call_args[0][0]
+        assert results[0]["reverified"] is True
+        assert results[0]["verdict"] == "PASS"
+        assert results[0]["status"] == "ok"
+        assert "skipped" not in results[1]
+        assert results[1]["verdict"] == "PASS"
+        assert results[1]["model_name"] == "test-model"
 
 
 def test_cli_yes_reverifies_model_check_with_its_own_size() -> None:
