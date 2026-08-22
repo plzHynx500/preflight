@@ -119,8 +119,12 @@ def check(
     # 실제로 계산되어 TypeError가 난다(#42). requires-python이 ">=3.9"인 한
     # 런타임에 읽히는 어노테이션은 Optional[...] 표기를 유지해야 한다.
     model: Optional[str] = typer.Option(None, "--model", help="HuggingFace 모델명 또는 config"),
-    batch_size: Optional[int] = typer.Option(None, "--batch-size"),
-    seq_len: Optional[int] = typer.Option(None, "--seq-len"),
+    batch_size: Optional[int] = typer.Option(
+        None, "--batch-size", min=1, help="모델 체크의 배치 크기 (기본 1, 1 이상 정수)"
+    ),
+    seq_len: Optional[int] = typer.Option(
+        None, "--seq-len", min=1, help="모델 체크의 시퀀스 길이 (기본 8, 1 이상 정수)"
+    ),
     yes: bool = typer.Option(False, "--yes", help="제시된 수정 명령어를 실행하고 재확인까지 수행"),
     json_output: bool = typer.Option(False, "--json", help="JSON 형식으로 결과 출력"),
 ) -> None:

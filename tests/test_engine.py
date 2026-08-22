@@ -396,6 +396,64 @@ def test_rss_survives_process_death_without_exception(fake_module) -> None:
     assert result["rss_peak_mb"] > 0
 
 
+# ── 0·음수 batch_size/seq_len 거부 (#59) ─────────────────────────────────────
+
+
+def test_run_rejects_non_positive_batch_size() -> None:
+    """batch_size가 0 이하로 명시되면 연산 없이 status="error"로 즉시 반환한다.
+
+    `_run()`은 `int(spec.get("batch_size") or DEFAULT_BATCH_SIZE)`로 값을 정하기
+    **전에** 원값을 검증하므로, 이 가드는 torch를 한 번도 건드리지 않는다 —
+    `torch=None`을 넘겨도(실제로는 절대 그렇게 호출되지 않는 값) 안전하게 통과한다.
+    """
+    env = worker._empty_env()
+
+    result = worker._run(None, {"model_name": None, "batch_size": 0, "seq_len": 8}, env)
+
+    assert result["status"] == worker.STATUS_ERROR
+    assert "batch_size" in result["error_log"]
+    assert result["env"] is env
+
+
+def test_run_rejects_negative_batch_size() -> None:
+    """음수는 `int(x or default)` 관용구를 그대로 통과하므로(음수는 참) 별도로 막아야 한다."""
+    result = worker._run(
+        None, {"model_name": None, "batch_size": -1, "seq_len": 8}, worker._empty_env()
+    )
+
+    assert result["status"] == worker.STATUS_ERROR
+    assert "batch_size" in result["error_log"]
+
+
+def test_run_rejects_non_positive_seq_len() -> None:
+    result = worker._run(
+        None, {"model_name": "dummy/model", "batch_size": 1, "seq_len": 0}, worker._empty_env()
+    )
+
+    assert result["status"] == worker.STATUS_ERROR
+    assert "seq_len" in result["error_log"]
+
+
+def test_run_still_defaults_when_batch_size_and_seq_len_are_omitted(monkeypatch) -> None:
+    """None(미지정)은 유효성 검사에 걸리지 않고 기존처럼 기본값으로 진행한다."""
+    called = {}
+
+    def fake_basic_check(torch, batch_size, seq_len, env):
+        called["batch_size"] = batch_size
+        called["seq_len"] = seq_len
+        return {"status": "ok"}
+
+    monkeypatch.setattr(worker, "_run_basic_check", fake_basic_check)
+
+    result = worker._run(object(), {"model_name": None}, worker._empty_env())
+
+    assert result == {"status": "ok"}
+    assert called == {
+        "batch_size": worker.DEFAULT_BATCH_SIZE,
+        "seq_len": worker.DEFAULT_SEQ_LEN,
+    }
+
+
 class _StubParam:
     """`_base_layer_device`가 보는 것만 흉내 낸 파라미터 — torch 없이도 돈다.
 

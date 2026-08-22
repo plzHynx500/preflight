@@ -26,6 +26,8 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
     }
 ```
 
+**`batch_size`·`seq_len`은 1 이상이어야 한다.** 0·음수를 명시적으로 주면 canary를 실행하지 않고 `status="error"`로 즉시 반환한다(#59) — 막지 않으면 `torch.randint(..., (0, 8))` 같은 빈/유효하지 않은 텐서로 forward+backward가 연산 없이 "성공"해버려, 아무것도 측정하지 않았는데 `status="ok"`가 나가는 거짓 양성이 된다. CLI는 파싱 단계(`min=1`)에서 먼저 막지만, 이 함수를 직접 호출하는 경로는 그 방어를 거치지 않으므로 함수 자체도 값을 검증한다. `None`(미지정)은 기본값(`batch_size=1`, `seq_len=8`)을 쓰는 정상 경로라 걸리지 않는다.
+
 **첫 인자는 모델 객체가 아니라 모델명이다.** 부모가 `nn.Module`을 만들어 넘기려면 부모 프로세스가 `torch`를 import해야 하는데, `import torch`·`import bitsandbytes` 자체가 죽는 상황을 잡는 것이 프로세스 격리([ADR-0002](../adr/0002-subprocess-isolation-for-canary.md))의 목적이므로 그 순간 격리가 무력화된다. 따라서 모델 구성은 전부 자식 프로세스 안에서 일어난다 — 모델을 만드는 코드(`canary/model.py`)도 자식에서만 호출되므로 함수 안에서만 torch/transformers를 import해야 하고, 부모 쪽 모듈에 import를 노출하면 안 된다. `model_name`이 `None`이면 기본 체크(모델과 무관한 최소 대표 구조)를 뜻한다.
 
 `status`는 사람이 읽는 값이 아니라 다음 단계가 기계적으로 분기하는 스위치다. `"import_crash"`·`"oom"`은 각각 재설치·batch 축소라는 서로 다른 FIX로 이어지므로, 그 둘로 확정할 수 없는 실패(모델명 오타로 config 조회 실패, 미구현 경로 호출 등)를 둘 중 하나로 적으면 사용자에게 엉뚱한 해결 명령이 제시된다. 그런 실패는 `"error"`로 두고 `error_log`에 원본 메시지를 담는다.

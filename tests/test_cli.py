@@ -266,6 +266,35 @@ def test_select_fix_target_prefers_first_fail() -> None:
     assert "fix" not in second
 
 
+def test_batch_size_zero_is_rejected_by_parser() -> None:
+    """`--batch-size 0`은 canary를 돌리기 전에 파서가 거부한다 (#59).
+
+    막지 않으면 0이 그대로 worker까지 흘러가 `torch.randint(..., (0, 8))` 같은 빈
+    텐서로 forward/backward가 "성공"해버려 status="ok"(PASS)가 나가는 거짓 양성이
+    된다.
+    """
+    result = runner.invoke(app, ["check", "--model", "dummy/model", "--batch-size", "0"])
+
+    assert result.exit_code != 0
+    assert "batch-size" in result.output
+
+
+def test_batch_size_negative_is_rejected_by_parser() -> None:
+    """`--batch-size -1`도 같은 이유로 거부된다 (#59)."""
+    result = runner.invoke(app, ["check", "--model", "dummy/model", "--batch-size", "-1"])
+
+    assert result.exit_code != 0
+    assert "batch-size" in result.output
+
+
+def test_seq_len_zero_is_rejected_by_parser() -> None:
+    """`--seq-len 0`도 같은 이유로 거부된다 (#59)."""
+    result = runner.invoke(app, ["check", "--model", "dummy/model", "--seq-len", "0"])
+
+    assert result.exit_code != 0
+    assert "seq-len" in result.output
+
+
 def test_top_level_help_survives_redirect() -> None:
     """`preflight --help`를 리다이렉트해도 죽지 않는다 (#89).
 

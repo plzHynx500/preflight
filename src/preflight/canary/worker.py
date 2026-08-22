@@ -317,8 +317,27 @@ def _is_oom(torch, exc: BaseException) -> bool:
 
 def _run(torch, spec: dict, env: dict) -> dict:
     model_name = spec.get("model_name")
-    batch_size = int(spec.get("batch_size") or DEFAULT_BATCH_SIZE)
-    seq_len = int(spec.get("seq_len") or DEFAULT_SEQ_LEN)
+    raw_batch_size = spec.get("batch_size")
+    raw_seq_len = spec.get("seq_len")
+
+    # CLI는 `min=1`로 막지만(#59), run_canary_check()를 직접 호출하는 경로(CLI 밖,
+    # 향후 API)는 그 방어를 거치지 않는다. 여기서 막지 않으면 0·음수가 그대로
+    # torch.randint(..., (0, 8)) 같은 빈/유효하지 않은 텐서로 흘러가 forward+backward가
+    # 연산 없이 "성공"해버려 status="ok"(PASS)가 나간다 — 아무것도 안 됐는데 초록불이
+    # 켜지는 거짓 양성이다. 명시적으로 준 값만 검사한다 — None(미지정)은 기본값을 쓰는
+    # 정상 경로이므로 걸리면 안 된다.
+    if (raw_batch_size is not None and int(raw_batch_size) < 1) or (
+        raw_seq_len is not None and int(raw_seq_len) < 1
+    ):
+        return _blank_result(
+            STATUS_ERROR,
+            f"batch_size/seq_len은 1 이상이어야 한다 "
+            f"(batch_size={raw_batch_size}, seq_len={raw_seq_len})",
+            env,
+        )
+
+    batch_size = int(raw_batch_size or DEFAULT_BATCH_SIZE)
+    seq_len = int(raw_seq_len or DEFAULT_SEQ_LEN)
 
     if model_name is None:
         return _run_basic_check(torch, batch_size, seq_len, env)
