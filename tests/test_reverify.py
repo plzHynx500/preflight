@@ -134,12 +134,8 @@ def test_cli_yes_reverifies_the_check_that_produced_the_fix() -> None:
 
     with (
         patch("preflight.cli.query_gpu_state", return_value=None),
-        patch(
-            "preflight.cli.run_canary_check", side_effect=[fake_raw, fake_raw_model]
-        ) as mock_run,
-        patch(
-            "preflight.cli.judge_result", side_effect=[fake_initial, fake_model_res]
-        ),
+        patch("preflight.cli.run_canary_check", side_effect=[fake_raw, fake_raw_model]) as mock_run,
+        patch("preflight.cli.judge_result", side_effect=[fake_initial, fake_model_res]),
         patch("preflight.cli.apply_fix") as mock_apply_fix,
         patch("preflight.cli.reverify", return_value=fake_reverified) as mock_reverify,
         patch("preflight.cli.render_report") as mock_render,
