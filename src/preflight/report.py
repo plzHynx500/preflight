@@ -535,13 +535,30 @@ def _compute_summary(results: list[dict], elapsed_seconds: float | None) -> dict
     }
 
 
+def _exit_code_hint(judged: list[dict]) -> int:
+    """`cli.get_exit_code(cli._aggregate_verdict(...))`와 항상 같은 값을 낸다.
+
+    이진(0/1) 계산이었던 예전 버전은 WARN만 있는 결과도 FAIL과 같은 1을 내서,
+    이 힌트를 믿고 분기하는 CI 스크립트가 WARN을 FAIL로 오인했다(#70). cli.py의
+    3분기(PASS=0/FAIL=1/WARN=2)와 로직을 맞춘다 — report.py가 cli.py를 import하면
+    순환참조가 나므로(cli.py가 render_report를 씀) 여기서 동일 로직을 재구현하고,
+    두 값이 항상 일치함을 test_report.py에서 검증한다.
+    """
+    verdicts = [r["verdict"] for r in judged if "verdict" in r]
+    if "FAIL" in verdicts:
+        return 1
+    if "WARN" in verdicts:
+        return 2
+    return 0
+
+
 def _render_json(results: list[dict], elapsed_seconds: float | None, notices: list[str]) -> None:
     summary = _compute_summary(results, elapsed_seconds)
     # 생략된 항목은 verdict 자체가 없다 — 판정에서 빼고 본다. 실제로는 생략이
     # 기본 체크 FAIL일 때만 일어나 결과가 뒤집히진 않지만, "우연히 맞는" 상태를
     # 남기지 않으려고 명시적으로 거른다(cli.md "결과 집계").
     judged = [r for r in results if not _is_skipped(r)]
-    exit_code_hint = 0 if all(r.get("verdict") == "PASS" for r in judged) else 1
+    exit_code_hint = _exit_code_hint(judged)
     payload = {
         "results": results,
         "summary": summary,
@@ -564,9 +581,10 @@ def render_report(
     JSON 모드에서는 `notices` 배열로 나간다 — 자동화 쪽도 `--yes`가 실제로 뭘
     했는지 알아야 하기 때문이다(#53·#57).
 
-    exit code 계산은 이 함수의 책임이 아니다 — 호출한 쪽(cli.py)이 results를 보고 직접
-    판단한다(WARN/FAIL 구분은 cli.md에서도 아직 미확정). JSON 모드의 exit_code_hint는
-    참고용 힌트일 뿐, 이 함수는 sys.exit을 호출하지 않는다.
+    실제 종료는 이 함수의 책임이 아니다 — 호출한 쪽(cli.py)이 results를 보고 직접
+    `sys.exit`을 결정한다. 다만 JSON 모드의 `exit_code_hint`는 `cli.get_exit_code()`가
+    반환할 값(0/1/2)과 항상 같아야 한다(#70) — 이름이 "hint"라도 이 값과 실제 종료
+    코드가 어긋나면 이 값을 믿고 분기하는 CI 스크립트가 오판한다.
     """
     if json_output:
         _render_json(results, elapsed_seconds, notices or [])
