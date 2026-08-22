@@ -164,6 +164,10 @@ ENV_FIELDS = (
     # CPU 기준선을 실제로 4bit으로 잴 수 있었는지. 4bit을 시도한 경우에만 채워지고,
     # 시도조차 안 한 경우(GPU 쪽이 이미 폴백)는 None으로 남는다 — _run_basic_check 참고.
     "bnb_cpu_4bit_supported",
+    # cuda_device_not_visible 원인의 진단 정보용(#81) — fix_command는 안 붙이되
+    # 현재 값을 화면에 보여준다. import 없이 읽는 값이라 import 실패와 무관하게
+    # 항상 채워진다(설정 안 됐으면 None).
+    "cuda_visible_devices",
 )
 
 
@@ -190,6 +194,8 @@ def _collect_env() -> dict:
     env["torch_version"] = _safe_read(_read_torch_version)
     env["torch_cuda_version"] = _safe_read(_read_torch_cuda_version)
     env["bnb_compiled_with_cuda"] = _safe_read(_read_bnb_compiled_with_cuda)
+    # os.environ 조회는 import가 아니라 실패할 수 없다 — _safe_read로 감쌀 이유가 없다.
+    env["cuda_visible_devices"] = os.environ.get("CUDA_VISIBLE_DEVICES")
     return env
 
 

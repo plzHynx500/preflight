@@ -316,6 +316,19 @@ def test_env_is_supplied_even_when_import_fails(fake_module) -> None:
     assert all(value is None for value in result["env"].values()), result["env"]
 
 
+def test_collect_env_reads_cuda_visible_devices(monkeypatch) -> None:
+    """`cuda_visible_devices`는 import 없이 `os.environ`에서 그대로 읽는다(#81).
+
+    torch/bitsandbytes import 성패와 무관하게 항상 시도할 수 있는 값이다 —
+    `_collect_env()`가 직접 호출되는 경로에서 값이 그대로 나오는지만 확인한다.
+    """
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+    assert worker._collect_env()["cuda_visible_devices"] == "-1"
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    assert worker._collect_env()["cuda_visible_devices"] is None
+
+
 def test_non_dict_env_is_normalized_to_none(monkeypatch) -> None:
     """`env` 자리에 dict가 아닌 값이 오면 없는 것으로 본다.
 

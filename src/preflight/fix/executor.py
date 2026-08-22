@@ -182,6 +182,18 @@ _FIX_MAP: dict[str, tuple[str, list[str] | None]] = {
 }
 
 
+def _cuda_visible_devices_note(value: str | None) -> str:
+    """`cuda_device_not_visible` 메시지에 덧붙일 진단 정보(#81).
+
+    fix_command는 붙이지 않는다 — 환경변수 문제라면 사용자가 직접 판단·수정할
+    문제지 우리가 대신 고칠 대상이 아니다. 대신 원인 조사에 바로 쓸 수 있게 현재
+    값을 보여준다.
+    """
+    if value is None:
+        return "CUDA_VISIBLE_DEVICES는 설정되지 않음 — 드라이버/CUDA 런타임 버전 불일치 등 다른 원인일 수 있다"
+    return f"현재 CUDA_VISIBLE_DEVICES={value!r}"
+
+
 def _quote(arg: str) -> str:
     """화면에 찍을 때만 쓰는 최소 인용 — 공백이 있으면 큰따옴표로 감싼다.
 
@@ -232,6 +244,9 @@ def suggest_fix(check_result: dict) -> dict | None:
         env = check_result.get("env") or {}
         tag = _torch_cuda_tag_for_driver(env.get("gpu_driver_version"))
         args = _torch_cuda_reinstall_args(tag)
+    if cause == "cuda_device_not_visible":
+        env = check_result.get("env") or {}
+        message = f"{message} ({_cuda_visible_devices_note(env.get('cuda_visible_devices'))})"
     fix_argv, fix_command = _build_command(args)
     return {
         "cause": cause,

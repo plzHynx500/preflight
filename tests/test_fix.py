@@ -342,6 +342,42 @@ def test_classify_cuda_build_with_gpu_and_healthy_bnb_still_cpu() -> None:
     assert classify_cause(res) == "cuda_device_not_visible"
 
 
+def test_cuda_device_not_visible_message_shows_current_env_value() -> None:
+    """#81: fix_command는 안 붙이되, 현재 CUDA_VISIBLE_DEVICES 값을 진단 정보로 보여준다."""
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.11.0+cu128",
+            "torch_cuda_version": "12.8",
+            "bnb_compiled_with_cuda": False,
+            "gpu_free_mb": 9595.8,
+            "cuda_visible_devices": "-1",
+        }
+    )
+
+    fix = suggest_fix(res)
+    assert fix is not None
+    assert fix["fix_command"] is None
+    assert "CUDA_VISIBLE_DEVICES='-1'" in fix["message"]
+
+
+def test_cuda_device_not_visible_message_notes_unset_env_value() -> None:
+    """CUDA_VISIBLE_DEVICES가 아예 설정 안 됐으면 "없다"는 것과 값을 구분해 보여준다."""
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.11.0+cu128",
+            "torch_cuda_version": "12.8",
+            "bnb_compiled_with_cuda": False,
+            "gpu_free_mb": 9595.8,
+            "cuda_visible_devices": None,
+        }
+    )
+
+    fix = suggest_fix(res)
+    assert fix is not None
+    assert fix["fix_command"] is None
+    assert "설정되지 않음" in fix["message"]
+
+
 def test_suggest_fix_never_imports_bitsandbytes(monkeypatch) -> None:
     """부모 프로세스는 bitsandbytes를 import하지 않는다 (#24, ADR-0002).
 
