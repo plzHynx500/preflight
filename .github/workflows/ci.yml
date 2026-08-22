@@ -37,26 +37,13 @@ jobs:
       - name: Lint
         run: ruff check .
 
-      # ─────────────────────────────────────────────────────────────────────
-      # [테스트 단계 정책 — 지금은 의도적으로 continue-on-error]
+      # 예전에는 이 단계에 continue-on-error를 걸어 뒀다 — tests/ 에 구현 전 골격
+      # 스텁(`raise NotImplementedError`)이 있어서, 차단 조건으로 두면 문서만 고치는
+      # PR까지 전부 빨간불이 되기 때문이었다. 그 주석은 "스텁이 사라지는 PR에서
+      # 함께 지운다"는 조건을 명시해 뒀고, 스텁은 이미 전부 사라졌다.
       #
-      # 현재 tests/ 에는 구현 전 골격 스텁이 있다(tests/test_engine.py 등이
-      # `raise NotImplementedError`). 실수가 아니라 의도된 상태다 —
-      # docs/architecture.md §5에서 모듈 경계와 계약은 확정했고 구현만 미착수다.
-      #
-      # 이 단계를 지금 차단 조건으로 두면 문서·인프라만 고치는 PR을 포함해 모든 PR이
-      # 무조건 빨간불이 된다. 그러면 (1) 팀원이 CI 실패를 기본값으로 학습해 무시하게 되고,
-      # (2) main branch protection의 "Require status checks to pass" 를 아예 켤 수 없다.
-      # 즉 항상 빨간 CI는 "정직한 상태"가 아니라 안전망을 못 쓰게 만드는 상태다.
-      #
-      # 그래서 결과는 숨기지 않고(step은 실패로 표시되고 로그도 그대로 남는다)
-      # job만 통과시킨다. 포맷·린트는 지금도 차단 조건이므로 CI는 오늘부터 실효가 있다.
-      #
-      # 되돌리는 시점: 첫 구현 Issue가 머지되어 NotImplementedError 스텁이 사라지는
-      # 바로 그 PR에서 아래 continue-on-error 줄과 이 주석 블록을 함께 지운다.
-      # (더 나은 대안: 스텁을 pytest.mark.xfail(strict=True)로 표시하면 "미구현"과
-      #  "깨짐"을 pytest가 직접 구분해주므로 이 예외 자체가 필요 없어진다 — 별도 Issue 후보.)
-      # ─────────────────────────────────────────────────────────────────────
+      # 그 예외가 남아 있는 동안 Python 3.9에서 테스트 17개가 실패하는 상태로 CI가
+      # success를 계속 찍었다(#42). 실패를 가리는 CI는 안전망이 아니라 안전망이
+      # 있다는 착각이므로, 3.9 수정과 함께 예외를 걷어낸다.
       - name: Test
-        continue-on-error: true
         run: pytest

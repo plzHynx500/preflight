@@ -59,3 +59,12 @@ src = ["src", "tests"]
 # ruff format이 기본으로 .md 안의 ```python 블록까지 재포맷하려 들어서 실제 코드와
 # 무관하게 포맷 체크가 항상 실패하는 걸 실측으로 확인해 제외했다.
 extend-exclude = ["docs/**"]
+
+# `from __future__ import annotations`가 있으면 ruff는 "어노테이션은 문자열로만 남고
+# 평가되지 않는다"고 보고 UP045 등으로 `Optional[X]` → `X | None` 전환을 요구한다.
+# 그 전제가 이 프로젝트에서는 성립하지 않는다 — Typer는 CLI 파서를 만들려고 런타임에
+# `typing.get_type_hints()`로 어노테이션을 다시 평가하고, 그 순간 Python 3.9에서
+# `X | None`이 TypeError를 낸다. 실제로 이 규칙을 따랐다가 3.9에서 테스트 17개가
+# 깨진 채 방치됐다(#42). requires-python이 ">=3.9"인 한 이 전환을 강제하지 않는다.
+[tool.ruff.lint.pyupgrade]
+keep-runtime-typing = true
