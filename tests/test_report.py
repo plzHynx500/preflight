@@ -30,6 +30,23 @@ def test_render_report_pass_text(capsys) -> None:
     assert "문제 없음" in out
 
 
+def test_render_report_ok_without_memory_delta_shows_neutral_line_not_success(capsys) -> None:
+    """device=cpu인데 memory_delta_mb를 못 재고도 status="ok"인 경우(#60 실측) —
+
+    "메모리 이동 확인됨"은 측정도 안 한 값을 확인됐다고 말하는 거짓 확인이라,
+    초록 ✔ 대신 중립적인 ℹ 문구여야 한다.
+    """
+    raw = {**_OK_RAW, "device": "cpu", "memory_delta_mb": None}
+    result = judge_result(raw)
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "메모리 이동 확인됨" not in out
+    assert "GPU 메모리 이동 없음" in out
+    assert "ℹ" in out
+
+
 def test_render_report_warn_cpu_multiplier_text(capsys) -> None:
     raw = {**_OK_RAW, "cpu_multiplier": 1.83}
     result = judge_result(raw)
@@ -126,6 +143,18 @@ def test_render_report_quant_fallback_is_informational_not_failure(capsys) -> No
     assert "문제 없음" in out
     assert "✖" not in out
     assert "⚠" not in out
+
+
+def test_render_report_quant_fallback_message_does_not_assume_old_version(capsys) -> None:
+    """bitsandbytes 미설치 환경도 있는데 "구버전"이라고 단정하지 않는다(#60)."""
+    raw = {**_OK_RAW, "device": "cuda", "quant_backend": "nn-linear-fallback"}
+    result = judge_result(raw)
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "구버전 bitsandbytes 등으로" not in out
+    assert "미설치 또는 구버전" in out
 
 
 def test_render_report_fallback_on_cpu_is_fail_with_both_lines(capsys) -> None:
@@ -292,6 +321,17 @@ def test_render_report_elapsed_seconds_omitted_when_none_text(capsys) -> None:
 
     out = capsys.readouterr().out
     assert "소요 시간" not in out
+
+
+def test_render_report_elapsed_seconds_under_one_shows_under_one_second(capsys) -> None:
+    """0.27초처럼 반올림하면 "0초"가 되는 실행이 "안 돌았나?"로 안 읽히게 한다(#60)."""
+    result = judge_result(_OK_RAW)
+
+    render_report([result], elapsed_seconds=0.27)
+
+    out = capsys.readouterr().out
+    assert "소요 시간 1초 미만" in out
+    assert "소요 시간 0초" not in out
 
 
 def test_render_report_elapsed_seconds_included_when_given_json(capsys) -> None:
