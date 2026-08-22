@@ -40,28 +40,75 @@ class FixExecutionError(RuntimeError):
 #:    문자열로 조립했다가 `shlex.split`으로 되돌리면 인용이 깨진다. 조립하지 않으면
 #:    되돌릴 일도 없다.
 
-#: CPU 전용 torch를 CUDA 빌드로 갈아끼우는 인자 — `_build_command`에 넘겨 `sys.executable`을
-#: 앞세운다(#52). 아래 `torch_cpu_only_build_no_gpu`의 안내 문구는 실행하지 않는 텍스트라
-#: 별도로 plain 문자열(`_TORCH_CUDA_REINSTALL_DISPLAY`)을 쓴다.
+
+#: CPU 전용 torch를 CUDA 빌드로 갈아끼우는 인자를 만든다 — `_build_command`에 넘겨
+#: `sys.executable`을 앞세운다(#52).
 #:
 #: `--force-reinstall`이 필요하다 — 없으면 pip이 "torch는 이미 설치돼 있다"며 아무
 #: 것도 하지 않고, `--yes`가 성공한 것처럼 끝난 뒤 재검증에서 같은 실패가 나온다.
-#:
-#: CUDA 버전은 cu124로 고정했다. `env`에 드라이버 버전이 없어 고를 근거가 없고
-#: (부모가 얹는 값은 `gpu_free_mb`/`gpu_total_mb`뿐이다), cu124 휠은 최신 드라이버
-#: 에서도 동작한다. NVML 드라이버 버전으로 고르는 개선은 Backlog로 분리했다.
-_TORCH_CUDA_REINSTALL_ARGS = [
-    "-m",
-    "pip",
-    "install",
-    "--force-reinstall",
-    "torch",
-    "--index-url",
-    "https://download.pytorch.org/whl/cu124",
-]
+def _torch_cuda_reinstall_args(tag: str) -> list[str]:
+    return [
+        "-m",
+        "pip",
+        "install",
+        "--force-reinstall",
+        "torch",
+        "--index-url",
+        f"https://download.pytorch.org/whl/{tag}",
+    ]
+
+
+#: 드라이버가 없거나 못 읽었을 때, 또는 아래 표의 어떤 구간에도 안 들 때 떨어지는
+#: 기본 휠 태그다. cu124는 비교적 오래된 CUDA 12.4용이라 최신 드라이버에서도 대체로
+#: 동작한다(#82 원안의 기존 고정값을 그대로 유지).
+_DEFAULT_TORCH_CUDA_TAG = "cu124"
 _TORCH_CUDA_REINSTALL_DISPLAY = (
-    "pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu124"
+    "pip install --force-reinstall torch --index-url"
+    f" https://download.pytorch.org/whl/{_DEFAULT_TORCH_CUDA_TAG}"
 )
+
+#: 드라이버 **major 브랜치 번호**(버전 문자열 첫 자리, 예: "595.79" → 595) → 골라줄
+#: PyTorch CUDA 휠 태그. 내림차순으로 두고 처음 만족하는 구간을 쓴다.
+#:
+#: patch 단위까지는 못 맞춘다. `env.gpu_driver_version`은 NVML이 OS 그대로 돌려준
+#: 문자열이라 Linux는 세 자리("560.28.03"), Windows는 두 자리("560.76")로 형식이
+#: 다르고, NVIDIA의 CUDA Toolkit 최소 드라이버 표도 OS마다 patch 값이 다르다
+#: (2026-08 조사). 두 표 모두 같은 major 브랜치 번호(560/570/580 …)를 쓰길래
+#: 그 자리만 비교한다 — 경계에 걸친 몇 안 되는 드라이버는 기본값으로 떨어질 뿐이라
+#: 틀리더라도 안전한 쪽(더 낮은 CUDA 요구치)으로만 틀린다.
+#:
+#: cu121·cu124·cu128·cu129는 후보에서 뺐다 — download.pytorch.org 실측(2026-08)으로
+#: 이 태그들이 특정 torch 버전에서 동결돼 있다(cu124→2.6.0 고정, cu129→2.9.0 고정 등).
+#: "드라이버가 지원하는 가장 높은 CUDA"를 그대로 고르면 오히려 지금 받을 수 있는
+#: 최신 torch(2.13.0)보다 낮은 버전을 설치하는 역효과가 난다. cu126·cu130만 계속
+#: 최신 torch 빌드를 받는다.
+#:
+#: **이 표는 시간이 지나면 어긋난다.** PyTorch가 태그를 새로 열거나 동결할 때,
+#: NVIDIA가 새 CUDA 메이저를 낼 때 다시 확인해야 한다 — 근거와 재확인 기준은
+#: docs/adr/0007-driver-version-based-torch-cuda-wheel-selection.md 참고.
+_TORCH_CUDA_TAG_BY_MIN_DRIVER_MAJOR: list[tuple[int, str]] = [
+    (580, "cu130"),  # CUDA 13.0 GA, Linux 최소 580.65.06
+    (560, "cu126"),  # CUDA 12.6 GA, Linux 560.28.03 / Windows 560.76
+]
+
+
+def _torch_cuda_tag_for_driver(driver_version: str | None) -> str:
+    """드라이버 버전 문자열의 major 브랜치 번호로 CUDA 휠 태그를 고른다.
+
+    파싱에 실패하거나(빈 값, 숫자가 아닌 첫 자리) 표의 어떤 구간에도 못 들면
+    기본값으로 떨어진다 — #82 제안 그대로 "매핑에 없으면 지금처럼 기본값".
+    """
+    if not driver_version:
+        return _DEFAULT_TORCH_CUDA_TAG
+    try:
+        major = int(driver_version.split(".", 1)[0])
+    except ValueError:
+        return _DEFAULT_TORCH_CUDA_TAG
+    for min_major, tag in _TORCH_CUDA_TAG_BY_MIN_DRIVER_MAJOR:
+        if major >= min_major:
+            return tag
+    return _DEFAULT_TORCH_CUDA_TAG
+
 
 _FIX_MAP: dict[str, tuple[str, list[str] | None]] = {
     "bnb_not_compiled_with_cuda": (
@@ -84,7 +131,9 @@ _FIX_MAP: dict[str, tuple[str, list[str] | None]] = {
             "설치된 torch가 CPU 전용 빌드다 (torch.version.cuda 없음) — NVIDIA GPU는"
             " 감지됐으므로 CUDA 빌드 torch로 재설치하면 GPU를 쓸 수 있다"
         ),
-        _TORCH_CUDA_REINSTALL_ARGS,
+        # fix_argv는 suggest_fix()가 env.gpu_driver_version을 보고 동적으로 만든다(#82) —
+        # 여기 args는 자리만 차지하며 쓰이지 않는다.
+        None,
     ),
     "torch_cpu_only_build_no_gpu": (
         (
@@ -179,6 +228,10 @@ def suggest_fix(check_result: dict) -> dict | None:
         return None
 
     message, args = _FIX_MAP.get(cause, _FIX_MAP["unknown"])
+    if cause == "torch_cpu_only_build":
+        env = check_result.get("env") or {}
+        tag = _torch_cuda_tag_for_driver(env.get("gpu_driver_version"))
+        args = _torch_cuda_reinstall_args(tag)
     fix_argv, fix_command = _build_command(args)
     return {
         "cause": cause,
