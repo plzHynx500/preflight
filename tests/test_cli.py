@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -262,6 +264,31 @@ def test_select_fix_target_prefers_first_fail() -> None:
     assert first["fix"]["cause"] == "import_crash_general"
     assert "fix" not in warn
     assert "fix" not in second
+
+
+def test_top_level_help_survives_redirect() -> None:
+    """`preflight --help`를 리다이렉트해도 죽지 않는다 (#89).
+
+    `ensure_utf8_streams()`가 `@app.callback()` 안에 있으면 Click이 그룹의
+    `--help`를 콜백 실행 전에 처리하고 종료해버려, 콜백을 한 번도 안 거친 채로
+    rich 도움말 상자가 로케일 인코딩(cp949 등)에서 죽는다. CliRunner는 캡처용
+    가짜 스트림을 쓰기 때문에 이 문제를 재현하지 못하므로, 실제 자식 프로세스로
+    `--help`를 파일로 리다이렉트해 재현해야 한다. `check --help`처럼 서브커맨드
+    `--help`는 그룹 콜백이 먼저 돌아 우연히 살아남으므로 이 회귀를 못 잡는다 —
+    반드시 최상위 `--help`여야 한다.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", "from preflight.cli import app; app()", "--help"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "UnicodeEncodeError" not in result.stderr
+    assert result.stderr == ""
 
 
 def test_ensure_utf8_streams_survives_cp949_output(monkeypatch) -> None:
