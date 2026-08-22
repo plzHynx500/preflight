@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import Optional
 
 import typer
 
@@ -38,14 +39,19 @@ def get_exit_code(verdict: str) -> int:
 
 @app.command()
 def check(
-    model: str | None = typer.Option(None, "--model", help="HuggingFace 모델명 또는 config"),
-    batch_size: int | None = typer.Option(None, "--batch-size"),
-    seq_len: int | None = typer.Option(None, "--seq-len"),
+    # `from __future__ import annotations`가 있어도 여기서는 `X | None`을 쓸 수 없다 —
+    # Typer가 CLI 파서를 만들려고 런타임에 `typing.get_type_hints()`로 이 문자열
+    # 어노테이션을 다시 평가하기 때문이다. 그 순간 Python 3.9에서 `str | None`이
+    # 실제로 계산되어 TypeError가 난다(#42). requires-python이 ">=3.9"인 한
+    # 런타임에 읽히는 어노테이션은 Optional[...] 표기를 유지해야 한다.
+    model: Optional[str] = typer.Option(None, "--model", help="HuggingFace 모델명 또는 config"),
+    batch_size: Optional[int] = typer.Option(None, "--batch-size"),
+    seq_len: Optional[int] = typer.Option(None, "--seq-len"),
     yes: bool = typer.Option(False, "--yes", help="제시된 수정 명령어를 실행하고 재확인까지 수행"),
     json_output: bool = typer.Option(False, "--json", help="JSON 형식으로 결과 출력"),
 ) -> None:
     """docs/contracts/canary-api.md §5.4 전체 흐름을 따른다."""
-    start_time = time.monotonic()
+    start_time = time.perf_counter()
 
     state = query_gpu_state()
 
@@ -111,7 +117,7 @@ def check(
                 break
         verdict = reverified.get("verdict", "PASS")
 
-    elapsed_seconds = time.monotonic() - start_time
+    elapsed_seconds = time.perf_counter() - start_time
     render_report(results, json_output=json_output, elapsed_seconds=elapsed_seconds)
 
     exit_code = get_exit_code(verdict)
