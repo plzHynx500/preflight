@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 import subprocess
 import sys
 from unittest.mock import patch
@@ -11,6 +12,19 @@ from preflight.cli import _select_fix_target, app, ensure_utf8_streams, get_exit
 from preflight.report import render_report
 
 runner = CliRunner()
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    """rich가 넣는 색상 코드를 지운다.
+
+    강제 컬러 환경(GitHub Actions CI 등)에서는 rich가 `--batch-size`처럼 하이픈으로
+    나뉜 옵션 이름을 토큰별로 따로 스타일링해 `-`·`-batch`·`-size` 사이에 ANSI
+    코드를 끼워 넣는다 — 로컬(색상 미강제)에서는 코드가 안 붙어 통과하던 substring
+    검사가 CI에서만 깨졌다(#59 PR 실측). 코드만 제거하면 문자는 그대로 이어 붙는다.
+    """
+    return _ANSI_ESCAPE.sub("", text)
 
 
 def test_check_command_exists() -> None:
@@ -264,6 +278,35 @@ def test_select_fix_target_prefers_first_fail() -> None:
     assert first["fix"]["cause"] == "import_crash_general"
     assert "fix" not in warn
     assert "fix" not in second
+
+
+def test_batch_size_zero_is_rejected_by_parser() -> None:
+    """`--batch-size 0`은 canary를 돌리기 전에 파서가 거부한다 (#59).
+
+    막지 않으면 0이 그대로 worker까지 흘러가 `torch.randint(..., (0, 8))` 같은 빈
+    텐서로 forward/backward가 "성공"해버려 status="ok"(PASS)가 나가는 거짓 양성이
+    된다.
+    """
+    result = runner.invoke(app, ["check", "--model", "dummy/model", "--batch-size", "0"])
+
+    assert result.exit_code != 0
+    assert "batch-size" in _strip_ansi(result.output)
+
+
+def test_batch_size_negative_is_rejected_by_parser() -> None:
+    """`--batch-size -1`도 같은 이유로 거부된다 (#59)."""
+    result = runner.invoke(app, ["check", "--model", "dummy/model", "--batch-size", "-1"])
+
+    assert result.exit_code != 0
+    assert "batch-size" in _strip_ansi(result.output)
+
+
+def test_seq_len_zero_is_rejected_by_parser() -> None:
+    """`--seq-len 0`도 같은 이유로 거부된다 (#59)."""
+    result = runner.invoke(app, ["check", "--model", "dummy/model", "--seq-len", "0"])
+
+    assert result.exit_code != 0
+    assert "seq-len" in _strip_ansi(result.output)
 
 
 def test_top_level_help_survives_redirect() -> None:

@@ -15,6 +15,8 @@ Preflight 명령어의 입출력 형식. CLI를 감싸는 도구(CI 스크립트
 
 **`--batch-size`·`--seq-len`은 모델 체크 전용이다.** `--model` 없이 주면 무시된다 — 기본 체크는 아래 "결과 집계"대로 항상 고정 크기로 돈다.
 
+**`--batch-size`·`--seq-len`은 1 이상의 정수만 허용한다.** 0·음수를 주면 Typer가 파싱 단계에서 즉시 거부한다(`Invalid value for '--batch-size': 0 is not in the range x>=1.`, 종료 코드 2) — canary를 실행하기 전이라 결과 항목이 아예 생기지 않는다(#59).
+
 ## 결과 집계
 
 `--model`이 주어지면 canary가 **두 번** 실행되고 결과가 2개가 된다. 그 둘을 하나의 최종 판정으로 접는 규칙이다.
