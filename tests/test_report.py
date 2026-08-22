@@ -80,6 +80,28 @@ def test_render_report_status_error_text(capsys) -> None:
     assert "import 중 크래시" not in out
 
 
+def test_render_report_status_error_known_cause_text(capsys) -> None:
+    """ModelConfigError(#62)면 표제가 "원인 미상" 대신 그 메시지를 보여준다(#83)."""
+    raw = {
+        **_OK_RAW,
+        "status": "error",
+        "error_log": (
+            "Traceback (most recent call last):\n"
+            '  File "worker.py", line 1, in <module>\n'
+            "    raise ModelConfigError(message) from None\n"
+            "preflight.canary.model.ModelConfigError: 모델을 찾을 수 없음: "
+            "typo-org/no-such-model (HF Hub에 해당 저장소 없음 — 모델명 오타 또는 비공개 저장소)"
+        ),
+    }
+    result = judge_result(raw)
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "모델을 찾을 수 없음: typo-org/no-such-model" in out
+    assert "원인 미상" not in out
+
+
 def test_render_report_quant_layer_device_cpu_fail_text(capsys) -> None:
     raw = {**_OK_RAW, "device": "cpu"}
     result = judge_result(raw)
