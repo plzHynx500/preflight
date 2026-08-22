@@ -405,6 +405,26 @@ def test_render_report_two_results_get_group_labels(capsys) -> None:
     assert "bitsandbytes 4bit 레이어" in out
 
 
+def test_render_report_group_label_brackets_survive_rich_markup(capsys) -> None:
+    """model_name의 대괄호는 rich 마크업으로 먹히지 않고 원문 그대로 표제에 남는다(#67)."""
+    model_result = judge_result({**_MODEL_MODE_RAW, "model_name": r"C:\models\ckpt[v2]"})
+
+    render_report([judge_result(_OK_RAW), model_result])
+
+    out = capsys.readouterr().out
+    assert r"모델 체크: C:\models\ckpt[v2]" in out
+
+
+def test_render_report_group_label_closing_tag_does_not_crash(capsys) -> None:
+    """model_name에 "[/bold]" 같은 닫는 태그 꼴이 들어가도 MarkupError 없이 끝까지 렌더된다(#67)."""
+    model_result = judge_result({**_MODEL_MODE_RAW, "model_name": "weird[/bold]name"})
+
+    render_report([judge_result(_OK_RAW), model_result])  # MarkupError가 나면 여기서 터진다
+
+    out = capsys.readouterr().out
+    assert "weird[/bold]name" in out
+
+
 def test_render_report_basic_check_without_gpu_is_not_model_mode(capsys) -> None:
     """GPU 없는 기본 체크(cpu_multiplier=None)를 --model 체크로 오인하지 않는다.
 

@@ -399,7 +399,9 @@ def _render_text(results: list[dict], elapsed_seconds: float | None) -> None:
         if show_group_labels:
             if index > 0:
                 console.print()
-            console.print(f"[bold]{_group_label(result)}[/bold]")
+            # model_name은 --model로 받은 사용자 입력이라 대괄호가 rich 마크업으로
+            # 먹힐 수 있다 — error_log(아래 detail)와 같은 이유로 escape한다(#67).
+            console.print(f"[bold]{escape(_group_label(result))}[/bold]")
 
         lines = _build_lines(result)
         all_lines.extend(lines)
