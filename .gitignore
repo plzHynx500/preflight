@@ -228,3 +228,5 @@ __marimo__/
 issue_body*
 pr_body*
 
+# 개인용 문서
+docs/정성오/
