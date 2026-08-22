@@ -639,3 +639,42 @@ def test_render_report_vram_unit_boundaries(capsys) -> None:
 
         out = capsys.readouterr().out
         assert f"{expected} 사용" in out, (memory_delta_mb, out)
+
+
+def test_render_report_single_line_error_log_keeps_both_ends(capsys) -> None:
+    """개행 없는 한 줄 로그는 앞뒤를 반씩 남긴다 — 출력이 입력보다 길어지지 않는다.
+
+    engine이 f"{type(exc).__name__}: {exc}"로 만드는 한 줄 로그는 예외 이름이
+    맨 앞에 온다. 첫 프레임/마지막 줄 논리를 그대로 태우면 같은 줄이 head와
+    tail에 중복돼 537자 입력이 619자 출력이 됐다(PR #48 리뷰, 상영님 실측).
+    """
+    log = "OSError: " + "x" * 520 + " END"
+    raw = {**_OK_RAW, "status": "error", "error_log": log}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out.replace("\n", "")
+    assert "OSError:" in out
+    assert "END" in out
+    assert "…" in out
+    assert out.count("x") < 520
+
+
+def test_render_report_truncated_error_log_says_so(capsys) -> None:
+    """줄였으면 줄였다고 알린다 — 사용자가 잘린 것을 전부라고 믿지 않게(PR #48 리뷰)."""
+    raw = {**_OK_RAW, "status": "import_crash", "error_log": _LONG_TRACEBACK}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out.replace("\n", "")
+    assert "일부만" in out
+    assert "--json)" in out
+
+
+def test_render_report_short_error_log_has_no_truncation_note(capsys) -> None:
+    raw = {**_OK_RAW, "status": "error", "error_log": "config 조회 실패"}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "일부만" not in out

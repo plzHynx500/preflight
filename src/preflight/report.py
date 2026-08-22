@@ -27,6 +27,7 @@ _REASON_MESSAGES: dict[str, str] = {
 _INFO_ONLY_REASONS = {"quant_fallback"}
 
 _ERROR_LOG_MAX_CHARS = 200
+_TRUNCATION_NOTE = "(로그 일부만 표시 — 전문은 preflight check --json)"
 
 
 class _Line:
@@ -102,12 +103,24 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
     단순 tail로만 가면 "무엇을 하다가 죽었는지"(첫 프레임)를 잃으므로 둘 다
     남긴다: 첫 프레임 한 줄 → "…" → 예산 안에서 뒤쪽 줄들. 트레이스백 헤더
     ("Traceback (most recent call last):")는 정보가 없어 첫 프레임으로 건너뛴다.
+
+    개행 없는 한 줄 로그(engine이 만드는 f"{type(exc).__name__}: {exc}" 등)는 예외
+    이름이 맨 앞에 오므로 앞뒤를 반씩 남긴다 — 첫 프레임/마지막 줄 논리를 그대로
+    태우면 같은 줄이 head와 tail에 중복돼 출력이 입력보다 길어진다(PR #48 리뷰).
+
+    줄였을 때는 마지막에 안내 한 줄을 덧붙인다. 가장 짧은 실패 로그(torch 미설치)도
+    230자라 사실상 모든 에러가 잘리는데, 잘렸다는 말이 없으면 사용자는 그게
+    전부라고 믿는다. 전문은 --json에 그대로 있다.
     """
     text = text.strip()
     if len(text) <= max_chars:
         return text
 
     lines = text.splitlines()
+    if len(lines) == 1:
+        half = (max_chars - 1) // 2
+        return f"{text[:half]}…{text[-half:]}\n{_TRUNCATION_NOTE}"
+
     head = lines[0]
     if head.startswith("Traceback (most recent call last)") and len(lines) > 1:
         head = lines[1]
@@ -130,7 +143,7 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
                 start = newline + 1
         tail = text[start:]
 
-    return f"{head}\n…\n{tail}"
+    return f"{head}\n…\n{tail}\n{_TRUNCATION_NOTE}"
 
 
 def _timing_line(result: dict) -> _Line:
