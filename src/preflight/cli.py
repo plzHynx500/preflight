@@ -238,6 +238,48 @@ def check(
                 # 않은 나머지 결과(예: 기본 체크의 WARN)가 종료 코드에서 사라진다(#68).
                 verdict = _aggregate_verdict(results)
 
+                # 기본 체크 재확인으로 FAIL이 풀리면, fail-fast로 생략됐던 모델
+                # 체크를 이어서 실행한다. 안 그러면 모델을 한 번도 확인한 적이
+                # 없는데 화면과 종료 코드는 "이상 없음"이라고 말한다(#84) —
+                # --model과 --yes를 함께 쓴 사용자가 물은 질문("이 모델이 이
+                # 기계에서 도는가")에 끝내 답하지 않은 채로 성공 취급되는 셈이다.
+                # 생략은 기본 체크가 FAIL일 때만 일어나므로(cli.md "결과 집계"),
+                # fix_target이 기본 체크(model_name 없음)일 때만 해당한다.
+                if fix_target.get("model_name") is None and results[index]["verdict"] != "FAIL":
+                    skipped_index = next((i for i, r in enumerate(results) if "skipped" in r), None)
+                    if skipped_index is not None:
+                        skipped = results[skipped_index]
+                        model_name = skipped["model_name"]
+                        model_batch_size = skipped.get("batch_size", 1)
+                        model_seq_len = skipped.get("seq_len", 8)
+                        # 기본 체크 재확인과 같은 이유로 지금 시점의 GPU 상태를
+                        # 다시 조회한다 — fix 실행 전 값은 더 이상 유효하지 않다
+                        # (reverify.py 참고).
+                        model_state = query_gpu_state()
+                        raw_model = run_canary_check(
+                            model_name=model_name,
+                            batch_size=model_batch_size,
+                            seq_len=model_seq_len,
+                        )
+                        if model_state:
+                            raw_model["env"] = {
+                                **(raw_model.get("env") or {}),
+                                "gpu_free_mb": model_state["free_mb"],
+                                "gpu_total_mb": model_state["total_mb"],
+                            }
+                        model_res = judge_result(raw_model)
+                        results[skipped_index] = {
+                            **model_res,
+                            "model_name": model_name,
+                            "batch_size": model_batch_size,
+                            "seq_len": model_seq_len,
+                        }
+                        notices.append(
+                            "--yes: 기본 체크 통과로 생략됐던 모델 체크"
+                            f"({model_name})를 이어서 실행했다"
+                        )
+                        verdict = _aggregate_verdict(results)
+
     elapsed_seconds = time.perf_counter() - start_time
     render_report(
         results,
