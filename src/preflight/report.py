@@ -17,7 +17,11 @@ _REASON_MESSAGES: dict[str, str] = {
     "status_error": "원인 미상 오류 (모델명 오타 등 config 조회 실패 가능) — 상세 로그 확인 필요",
     "quant_layer_device_cpu": "4bit 양자화 레이어가 device=cpu로 감지됨 → 조용한 CPU 폴백",
     "quant_fallback": (
-        "구버전 bitsandbytes 등으로 4bit 레이어 구성 실패 → nn.Linear로 대체 실행됨"
+        # bitsandbytes 미설치와 구버전/CPU 빌드를 원인분류 없이 하나로 뭉뚱그린
+        # 문구다 — "구버전"이라고 단정하면 설치 자체가 안 된 환경에서 오진이 된다
+        # (#60). #44(env.bitsandbytes_installed)가 머지되면 그 값으로 두 경우를
+        # 정확히 갈라 쓸 수 있다.
+        "bitsandbytes 미설치 또는 구버전 등으로 4bit 레이어 구성 실패 → nn.Linear로 대체 실행됨"
         " (device=cpu 판정 생략)"
     ),
     "memory_delta_high": "canary 실행만으로 가용 VRAM의 90% 이상을 소모 — 실제 학습 시 OOM 위험 높음",
@@ -95,7 +99,17 @@ def _status_line(result: dict) -> _Line:
     status = result.get("status")
     device = result.get("device")
     if status == "ok":
-        return _Line("✔", "green", f"Canary 연산 실행    device={device} · 메모리 이동 확인됨")
+        if result.get("memory_delta_mb") is not None:
+            return _Line("✔", "green", f"Canary 연산 실행    device={device} · 메모리 이동 확인됨")
+        # memory_delta_mb를 못 재고도 status="ok"인 경우(예: 기본 체크의 device=cpu)엔
+        # "메모리 이동 확인됨"이 거짓 확인이 된다 — 측정도 안 한 값을 확인됐다고
+        # 말하는 셈이라, 다음 줄(quant 판정)이 ✖이면 성공 직후 실패가 나오는 것처럼
+        # 모순돼 보인다(#60). 초록 ✔ 대신 중립적인 ℹ로 측정을 생략했음을 알린다.
+        return _Line(
+            "ℹ",
+            "dim",
+            f"Canary 연산 실행    device={device} · GPU 메모리 이동 없음 (측정 생략)",
+        )
 
     error_log = result.get("error_log")
     detail = _truncate_error_log(str(error_log)) if error_log else None
@@ -533,7 +547,11 @@ def _render_text(results: list[dict], elapsed_seconds: float | None, notices: li
 
     summary = f"{item_label} · {problem_label}"
     if elapsed_seconds is not None:
-        summary += f" · 소요 시간 {elapsed_seconds:.0f}초"
+        # 1초 미만은 반올림하면 "0초"가 되어 "안 돌았나?"로 읽힌다(#60) — 거짓은
+        # 아니지만 실제로 0.27초 걸린 진단이 "0초"로 보이면 실행 자체를 의심하게
+        # 만든다.
+        elapsed_label = "1초 미만" if elapsed_seconds < 1 else f"{elapsed_seconds:.0f}초"
+        summary += f" · 소요 시간 {elapsed_label}"
     console.print(summary)
 
 
