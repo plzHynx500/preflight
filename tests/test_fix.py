@@ -39,7 +39,9 @@ def test_classify_and_suggest_bnb_not_compiled() -> None:
     assert fix1["cause"] == "bnb_not_compiled_with_cuda"
     assert fix1["fix_argv"] == [sys.executable, *BNB_REINSTALL_ARGS]
 
-    # case 2: 4bit cpu fallback — canary 자식이 채워 보낸 env로 판별한다 (#19)
+    # case 2: 4bit cpu fallback — canary 자식이 채워 보낸 env로 판별한다 (#19).
+    # torch 쪽 신호(torch_version/torch_cuda_version)를 아예 못 읽은 경우에만 남는
+    # 마지막 폴백 경로다 — bnb_compiled_with_cuda 단독 판단의 한계는 #72 참고.
     res2 = {
         "status": "ok",
         "device": "cpu",
@@ -114,6 +116,188 @@ def test_classify_and_suggest_4bit_cpu_other() -> None:
     assert fix is not None
     assert fix["cause"] == "4bit_cpu_fallback_other"
     assert fix["fix_command"] is None
+    # 원인을 특정 못 한 경우다 — "CUDA 메모리 부족"이라고 단정하면 사용자를 정반대
+    # 방향(배치 축소)으로 보낸다(#55).
+    assert "메모리 부족" not in fix["message"]
+
+
+# ── import_crash 분류: bitsandbytes 시그니처로 좁힌다 (#51) ────────────────────
+#
+# 로그에 "cuda"라는 글자가 있기만 하면 bitsandbytes 탓으로 돌리던 규칙 때문에,
+# torch CUDA 빌드가 깨졌거나 CUDA 런타임이 없는 환경까지 전부 bnb 재설치로
+# 안내됐다. bnb_not_compiled_with_cuda는 fix_command를 가진 유일한 원인이라
+# 이 과잉 분류가 곧 "--yes가 무관한 명령을 실제로 실행"으로 직결됐다.
+
+_CUDA_IMPORT_CRASH_LOGS = {
+    "torch CUDA 빌드 깨짐": (
+        "Traceback (most recent call last):\n"
+        '  File "site-packages/torch/__init__.py", line 148, in <module>\n'
+        "    raise err\n"
+        "OSError: [WinError 126] 지정된 모듈을 찾을 수 없습니다. Error loading "
+        '"C:\\venv\\Lib\\site-packages\\torch\\lib\\c10_cuda.dll" or one of its dependencies.'
+    ),
+    "CUDA 런타임 없음": (
+        "Traceback (most recent call last):\n"
+        '  File "site-packages/torch/__init__.py", line 1477, in <module>\n'
+        "    from torch._C import *\n"
+        "ImportError: libcudart.so.12: cannot open shared object file: "
+        "No such file or directory"
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_CUDA_IMPORT_CRASH_LOGS))
+def test_classify_cuda_import_crash_is_not_blamed_on_bitsandbytes(label: str) -> None:
+    """로그에 cuda가 있다는 이유만으로 bitsandbytes 재설치를 안내하지 않는다(#51)."""
+    res = {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["status_import_crash"],
+        "error_log": _CUDA_IMPORT_CRASH_LOGS[label],
+    }
+
+    assert classify_cause(res) == "import_crash_general"
+    fix = suggest_fix(res)
+    assert fix is not None
+    assert fix["fix_command"] is None, "무관한 명령이 --yes로 실행되면 안 된다"
+
+
+def test_classify_real_bitsandbytes_import_crash_still_matches() -> None:
+    """진짜 bitsandbytes 로그는 계속 올바르게 분류된다 — 좁히다가 놓치면 안 된다(#51)."""
+    logs = [
+        "libbitsandbytes_cpu.so: undefined symbol: cget_col_row_stats",
+        (
+            "Traceback (most recent call last):\n"
+            '  File "site-packages/bitsandbytes/cextension.py", line 109, in <module>\n'
+            "    lib = get_native_library()\n"
+            "RuntimeError: CUDA Setup failed despite CUDA being available."
+        ),
+    ]
+    for log in logs:
+        res = {
+            "status": "import_crash",
+            "verdict": "FAIL",
+            "reasons": ["status_import_crash"],
+            "error_log": log,
+        }
+        assert classify_cause(res) == "bnb_not_compiled_with_cuda", log
+
+
+# ── cpu 폴백 분류: env의 환경 사실을 읽는다 (#55, #72) ─────────────────────────
+
+
+def _cpu_fallback(env: dict) -> dict:
+    """4bit 레이어가 cpu로 떨어진 판정 결과에 주어진 env를 얹는다."""
+    return {
+        "status": "ok",
+        "device": "cpu",
+        "quant_backend": "bnb-4bit",
+        "verdict": "FAIL",
+        "reasons": ["quant_layer_device_cpu"],
+        "env": env,
+    }
+
+
+def test_classify_cpu_only_torch_build_with_gpu_present() -> None:
+    """torch가 CPU 전용 빌드인데 NVIDIA GPU는 보인다 → torch 재설치가 실제 해결책(#55)."""
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.13.0+cpu",
+            "torch_cuda_version": None,
+            "bnb_compiled_with_cuda": None,
+            "gpu_free_mb": 9595.8,
+            "gpu_total_mb": 12282.0,
+        }
+    )
+
+    assert classify_cause(res) == "torch_cpu_only_build"
+    fix = suggest_fix(res)
+    assert fix is not None
+    assert "CPU 전용 빌드" in fix["message"]
+    assert fix["fix_command"] is not None
+    assert "torch" in fix["fix_command"]
+    # --force-reinstall이 없으면 pip이 "이미 설치됨"으로 아무것도 하지 않는다.
+    assert "--force-reinstall" in fix["fix_command"]
+
+
+def test_classify_cpu_only_torch_build_without_nvidia_gpu() -> None:
+    """#55의 QA 환경(CPU 전용 torch + NVIDIA GPU 없음) — 원인은 CPU 빌드,
+    다만 GPU가 없으니 CUDA torch를 자동으로 받아봐야 달라지는 게 없다.
+
+    안내 문구에는 재설치 명령이 남아 "GPU 기계라면 이걸 하면 된다"를 알려주되,
+    `--yes`의 자동 실행 대상에서는 뺀다.
+    """
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.13.0+cpu",
+            "torch_cuda_version": None,
+            "bnb_compiled_with_cuda": None,
+            "bnb_cpu_4bit_supported": None,
+        }
+    )
+
+    assert classify_cause(res) == "torch_cpu_only_build_no_gpu"
+    fix = suggest_fix(res)
+    assert fix is not None
+    assert "CPU 전용 빌드" in fix["message"]
+    assert "torch" in fix["message"] and "재설치" in fix["message"]
+    assert fix["fix_command"] is None
+    assert "메모리 부족" not in fix["message"]
+
+
+def test_classify_cuda_build_without_nvml_gpu() -> None:
+    """torch는 CUDA 빌드인데 NVML이 GPU를 못 찾았다 → 드라이버/GPU 쪽 문제(#55)."""
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.11.0+cu128",
+            "torch_cuda_version": "12.8",
+            "bnb_compiled_with_cuda": False,
+        }
+    )
+
+    assert classify_cause(res) == "no_nvidia_gpu_or_driver"
+    fix = suggest_fix(res)
+    assert fix is not None
+    assert fix["fix_command"] is None
+    assert "bitsandbytes" not in fix["message"]
+
+
+def test_classify_hidden_cuda_device_is_not_a_bitsandbytes_build_problem() -> None:
+    """#72 실측: CUDA_VISIBLE_DEVICES=-1이면 bnb_compiled_with_cuda가 False가 된다.
+
+    bitsandbytes 0.50에서 이 값은 빌드 속성이 아니라 "런타임에 CUDA 장치가 보이는가"라
+    GPU가 가려졌을 뿐인 정상 설치본에도 False가 나온다. 그걸 빌드 문제로 읽고
+    재설치를 권하면 아무것도 안 고쳐진다 (RTX 4070 Ti / bnb 0.50.0 실측).
+    """
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.11.0+cu128",
+            "torch_cuda_version": "12.8",
+            "bnb_compiled_with_cuda": False,
+            "gpu_free_mb": 9595.8,
+            "gpu_total_mb": 12282.0,
+        }
+    )
+
+    assert classify_cause(res) == "cuda_device_not_visible"
+    fix = suggest_fix(res)
+    assert fix is not None
+    assert fix["cause"] != "bnb_not_compiled_with_cuda"
+    assert fix["fix_command"] is None, "무효한 bitsandbytes 재설치가 --yes로 실행되면 안 된다"
+
+
+def test_classify_cuda_build_with_gpu_and_healthy_bnb_still_cpu() -> None:
+    """같은 분기, bnb 값만 True — 판단 근거는 torch·NVML 쪽이라 결론이 같다(#72)."""
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.11.0+cu128",
+            "torch_cuda_version": "12.8",
+            "bnb_compiled_with_cuda": True,
+            "gpu_free_mb": 9595.8,
+        }
+    )
+
+    assert classify_cause(res) == "cuda_device_not_visible"
 
 
 def test_suggest_fix_never_imports_bitsandbytes(monkeypatch) -> None:
@@ -181,7 +365,21 @@ def test_classify_falls_back_when_env_is_missing() -> None:
         "verdict": "FAIL",
         "reasons": ["quant_layer_device_cpu"],
     }
-    for env in (None, {}, {"bnb_compiled_with_cuda": None}):
+    envs = (
+        None,
+        {},
+        {"bnb_compiled_with_cuda": None},
+        # 자식이 아무 속성도 못 읽어 골격만 온 경우(worker._empty_env()). 여기서
+        # torch_cuda_version이 None인 것은 "CPU 전용 빌드"가 아니라 "수집 실패"다 —
+        # 둘을 섞으면 멀쩡한 CUDA 환경에 torch 재설치를 권하게 된다(#55).
+        {
+            "torch_version": None,
+            "torch_cuda_version": None,
+            "bnb_compiled_with_cuda": None,
+            "bnb_cpu_4bit_supported": None,
+        },
+    )
+    for env in envs:
         assert classify_cause({**base, "env": env}) == "4bit_cpu_fallback_other", env
     assert classify_cause(base) == "4bit_cpu_fallback_other"
 
@@ -301,12 +499,12 @@ def test_apply_fix_raises_fix_execution_error_on_os_error() -> None:
 
 def test_cli_check_without_yes_does_not_execute_fix() -> None:
     runner = CliRunner()
-    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed"}
     fake_res = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["status_import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
 
     with (
@@ -327,12 +525,12 @@ def test_cli_check_without_yes_does_not_execute_fix() -> None:
 
 def test_cli_check_with_yes_executes_fix() -> None:
     runner = CliRunner()
-    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed"}
     fake_res = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["status_import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
 
     with (
@@ -373,12 +571,12 @@ def test_cli_check_with_yes_no_fix_when_pass() -> None:
 
 def test_cli_check_with_yes_reverify_pass_exits_0() -> None:
     runner = CliRunner()
-    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed"}
     fake_res_fail = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["status_import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
     fake_res_pass = {
         "status": "ok",

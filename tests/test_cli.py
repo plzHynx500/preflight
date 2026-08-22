@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import io
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from preflight.cli import _select_fix_target, app, get_exit_code
+from preflight.cli import _select_fix_target, app, ensure_utf8_streams, get_exit_code
+from preflight.report import render_report
 
 runner = CliRunner()
 
@@ -97,12 +99,13 @@ def test_check_exit_code_warn() -> None:
 
 
 def test_check_exit_code_yes_reverify_pass() -> None:
-    fake_raw = {"status": "import_crash", "error_log": "CUDA error"}
+    # error_log에 bitsandbytes 시그니처가 있어야 fix_argv가 붙어 reverify 경로를 탄다(#51).
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA error"}
     fake_initial = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA error",
+        "error_log": "libbitsandbytes_cpu.so: CUDA error",
     }
     fake_reverified = {
         "status": "ok",
@@ -122,12 +125,13 @@ def test_check_exit_code_yes_reverify_pass() -> None:
 
 
 def test_check_exit_code_yes_reverify_warn() -> None:
-    fake_raw = {"status": "import_crash", "error_log": "CUDA error"}
+    # error_log에 bitsandbytes 시그니처가 있어야 fix_argv가 붙어 reverify 경로를 탄다(#51).
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA error"}
     fake_initial = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA error",
+        "error_log": "libbitsandbytes_cpu.so: CUDA error",
     }
     fake_reverified = {
         "status": "ok",
@@ -258,3 +262,40 @@ def test_select_fix_target_prefers_first_fail() -> None:
     assert first["fix"]["cause"] == "import_crash_general"
     assert "fix" not in warn
     assert "fix" not in second
+
+
+def test_ensure_utf8_streams_survives_cp949_output(monkeypatch) -> None:
+    """cp949로 리다이렉트된 stdout에도 ✖·— 같은 기호를 죽지 않고 찍는다 (#54).
+
+    Windows에서 `preflight check > file`처럼 stdout이 파이프/파일로 바뀌면
+    인코딩이 로케일(cp949 등)을 따라가 rich 콘솔의 ✔/✖/⚠/…/— 기호에서
+    UnicodeEncodeError로 죽었다. ensure_utf8_streams()가 stdout을 UTF-8로
+    재설정한 뒤에는 render_report()가 문제없이 완료돼야 한다.
+    """
+    buffer = io.BytesIO()
+    cp949_stdout = io.TextIOWrapper(buffer, encoding="cp949")
+    monkeypatch.setattr("sys.stdout", cp949_stdout)
+
+    ensure_utf8_streams()
+
+    results = [
+        {
+            "status": "import_crash",
+            "verdict": "FAIL",
+            "reasons": ["status_import_crash"],
+            "error_log": "CUDA error",
+        },
+        {
+            "model_name": "dummy/model",
+            "batch_size": 1,
+            "seq_len": 8,
+            "skipped": "환경 체크 실패",
+        },
+    ]
+
+    render_report(results, json_output=False, elapsed_seconds=1.0)
+    cp949_stdout.flush()
+
+    output = buffer.getvalue().decode("utf-8")
+    assert "✖" in output
+    assert "—" in output

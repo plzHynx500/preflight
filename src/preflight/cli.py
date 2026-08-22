@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Optional
 
@@ -17,9 +18,26 @@ from preflight.reverify import reverify
 app = typer.Typer(help="Preflight — 파인튜닝 환경 진단 CLI")
 
 
+def ensure_utf8_streams() -> None:
+    """stdout/stderr을 UTF-8로 강제한다.
+
+    Windows에서 리다이렉트(`> file`, `| other`)된 스트림은 콘솔이 아니라 시스템
+    로케일(cp949 등) 인코딩을 따른다 — 대화형 콘솔은 PEP 528 덕에 UTF-8이라 개발
+    중에는 드러나지 않는다. 리포트의 `✔/✖/⚠/…/—` 같은 기호가 그 로케일에 없으면
+    `UnicodeEncodeError`로 죽어 `preflight check > result.txt`,
+    `preflight check --json > result.json` 같은 CI 연동 시나리오가 통째로
+    실패한다(#54). `errors="replace"`로 두어 그래도 못 옮기는 극단적 환경에서는
+    죽는 대신 `?`로 대체한다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 @app.callback()
 def callback() -> None:
     """Preflight CLI."""
+    ensure_utf8_streams()
 
 
 def get_exit_code(verdict: str) -> int:

@@ -117,7 +117,7 @@ def test_cli_yes_reverifies_the_check_that_produced_the_fix() -> None:
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
     fake_reverified = {
         "status": "ok",
@@ -213,18 +213,18 @@ def test_cli_yes_keeps_verdict_of_results_not_reverified() -> None:
 
 
 def test_cli_yes_exits_nonzero_when_reverify_fails() -> None:
-    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed"}
     fake_initial = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
     fake_reverified = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed still",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed still",
     }
 
     with (
@@ -241,7 +241,7 @@ def test_cli_yes_exits_nonzero_when_reverify_fails() -> None:
         rendered_data = mock_render.call_args[0][0][0]
         assert rendered_data["reverified"] is True
         assert rendered_data["verdict"] == "FAIL"
-        assert rendered_data["error_log"] == "CUDA Setup failed still"
+        assert rendered_data["error_log"] == "libbitsandbytes_cpu.so: CUDA Setup failed still"
 
 
 def test_cli_yes_not_called_when_initial_pass() -> None:
@@ -278,7 +278,7 @@ def test_cli_yes_reports_fix_failure_without_traceback() -> None:
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
 
     err = FixExecutionError(
@@ -372,12 +372,12 @@ def test_cli_yes_skips_reverify_when_no_fix_command() -> None:
 
 
 def test_cli_without_yes_does_not_call_reverify() -> None:
-    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed"}
     fake_initial = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
 
     with (

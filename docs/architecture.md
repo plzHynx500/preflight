@@ -121,7 +121,7 @@ result = run_canary(model, batch_size=target_batch_size, seq_len=target_seq_len)
   3. subprocess 격리 하에 forward+backward+`optimizer.step()` 실행
   4. device placement·메모리 델타·실행시간(CPU 폴백 대비 배수) 측정
   5. 자식 프로세스의 비정상 종료(OOM 포함)를 부모가 캐치해 정상 진단 결과로 포장
-  6. FAIL 시, 텍스트 파싱이 아니라 `torch.version.cuda`·`bitsandbytes.cextension.lib.compiled_with_cuda`·`sys.version_info` 같은 안정된 파이썬 속성으로 원인을 분류한다
+  6. FAIL 시, 텍스트 파싱이 아니라 `torch.version.cuda`·`sys.version_info` 같은 안정된 파이썬 속성으로 원인을 분류한다 — 단 **속성이라고 다 안정된 것은 아니다.** `bitsandbytes.cextension.lib.compiled_with_cuda`는 이름과 달리 빌드 속성이 아니라 "런타임에 CUDA 장치가 보이는가"를 반영하며(bnb 0.50 실측, #72), 버전에 따라 의미가 달라질 수 있어 단독 판단 근거로 쓰지 않는다 — 자세한 내용은 [contracts/canary-api.md의 `env` 절](contracts/canary-api.md) 참고
 - **출력**: 항목별 PASS/WARN/FAIL, 실측값, 실패 시 원인과 해결 명령어
 
 ### FixExecutor
@@ -233,9 +233,9 @@ conda, poetry, venv, Docker 등 가상환경 관리 방식이 사용자마다 �
 
 | 탐지 항목 | 판정 | FIX 방향(안) |
 |---|---|---|
-| Import 크래시 | FAIL | 예외 타입별 재설치 명령. 예: bitsandbytes CUDA 미빌드 → `<sys.executable> -m pip install bitsandbytes --upgrade --force-reinstall` (PATH의 `pip`을 쓰면 진단한 환경과 다른 곳에 설치될 수 있다 — [cli.md](contracts/cli.md) 참고) |
+| Import 크래시 | FAIL | 로그에 bitsandbytes 시그니처가 있을 때만 `<sys.executable> -m pip install bitsandbytes --upgrade --force-reinstall`(PATH의 `pip`을 쓰면 진단한 환경과 다른 곳에 설치될 수 있다 — [cli.md](contracts/cli.md) 참고). CUDA 런타임·드라이버 계열은 명령 없이 로그 안내(#51) |
 | OOM(`--model` 목표 크기 실행 시) | FAIL | batch_size 축소 또는 quantization 적용 안내 |
-| 4bit 레이어 device=cpu 감지 | FAIL | `compiled_with_cuda` False면 재설치 FIX, True인데도 cpu면 다른 원인으로 분기 안내 |
+| 4bit 레이어 device=cpu 감지 | FAIL | `env`를 신뢰도 순으로 읽어 분기한다 — CPU 전용 torch 빌드(GPU 있으면 CUDA 빌드 재설치 FIX) → NVIDIA GPU/드라이버 미검출 안내 → CUDA 장치 가려짐 안내. `compiled_with_cuda`는 단독 근거로 쓰지 않는다(#55·#72) |
 | CPU 대비 배수 2배 미만 | WARN | 원인 특정 어려운 회색지대 — 성능 저하 가능성 안내 수준으로 예상 |
 | 메모리 델타 15% 이상 벗어남 | WARN | fragmentation·activation 재계산 등 후보 원인 안내 수준으로 예상 |
 

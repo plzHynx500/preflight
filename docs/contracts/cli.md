@@ -121,6 +121,20 @@ $ preflight check --model meta-llama/Llama-3.1-8B --batch-size 2 --seq-len 2048
 가용 VRAM의 90% 이상을 소모했으면(`memory_delta_high`) VRAM 실측 줄 옆에 `⚠ VRAM 여유`
 줄이 추가로 나온다 — WARN 판정과 화면이 항상 같은 숫자를 가리킨다.
 
+4bit 구성에 실패해 fp32로 폴백한 경우(`quant_backend="nn-linear-fallback"`)에는 모델 체크
+블록에도 폴백 한 줄이 나온다. 기본 체크의 `bitsandbytes 4bit 레이어` 줄과 달리 **판정이
+아니라 바로 위 VRAM 숫자의 전제를 밝히는 정보성 줄**이라 ✔/⚠/✖ 대신 `ℹ`를 쓰고 문제 개수에
+넣지 않는다 — 폴백은 QLoRA가 아니라 fp32 전체 모델을 돌리므로 같은 모델·같은 배치라도
+실측값이 크게 나오고, 이 줄이 없으면 사용자는 그 숫자를 QLoRA 기준으로 읽어 "이 GPU로는
+무리"라는 정반대 결론을 낸다(#66):
+
+```
+모델 체크: meta-llama/Llama-3.1-8B
+✔ Canary 연산 실행              device=cuda · 메모리 이동 확인됨
+✔ VRAM 실측                     8.4GB / 9.2GB 가용 (총 12GB)
+ℹ 4bit 레이어 폴백              4bit 레이어 구성 실패 → fp32 전체 모델로 실측됨 (VRAM 수치가 QLoRA 기준보다 크다)
+```
+
 실측값이 1GB 미만이면 `18MB`처럼 **MB 단위**로 표기한다 — `0.0GB`로 뭉개지면 측정에 실패한
 것처럼 읽히기 때문이다(#45). 가용·총 VRAM은 항상 충분히 커서 GB 그대로다.
 
@@ -177,11 +191,19 @@ $ preflight check --json
       "error_log": null,
       "verdict": "FAIL",
       "reasons": ["quant_layer_device_cpu"],
+      "env": {
+        "torch_version": "2.13.0+cpu",
+        "torch_cuda_version": null,
+        "bnb_compiled_with_cuda": null,
+        "bnb_cpu_4bit_supported": null,
+        "gpu_free_mb": 9420.0,
+        "gpu_total_mb": 12282.0
+      },
       "fix": {
-        "cause": "bnb_not_compiled_with_cuda",
-        "message": "bitsandbytes가 CUDA 지원 없이 빌드됨",
-        "fix_command": "/home/user/venv/bin/python -m pip install bitsandbytes --upgrade --force-reinstall",
-        "fix_argv": ["/home/user/venv/bin/python", "-m", "pip", "install", "bitsandbytes", "--upgrade", "--force-reinstall"]
+        "cause": "torch_cpu_only_build",
+        "message": "설치된 torch가 CPU 전용 빌드다 (torch.version.cuda 없음) — NVIDIA GPU는 감지됐으므로 CUDA 빌드 torch로 재설치하면 GPU를 쓸 수 있다",
+        "fix_command": "/home/user/venv/bin/python -m pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu124",
+        "fix_argv": ["/home/user/venv/bin/python", "-m", "pip", "install", "--force-reinstall", "torch", "--index-url", "https://download.pytorch.org/whl/cu124"]
       }
     }
   ],

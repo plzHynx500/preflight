@@ -26,6 +26,11 @@ _REASON_MESSAGES: dict[str, str] = {
 # 이 reason은 verdict(FAIL/WARN)와 무관한 정보성 표시라 문제 카운트에서 제외한다.
 _INFO_ONLY_REASONS = {"quant_fallback"}
 
+# --model 모드 전용 폴백 문구 (_quant_fallback_line 참고).
+_MODEL_MODE_QUANT_FALLBACK_MESSAGE = (
+    "4bit 레이어 구성 실패 → fp32 전체 모델로 실측됨 (VRAM 수치가 QLoRA 기준보다 크다)"
+)
+
 _ERROR_LOG_MAX_CHARS = 200
 _TRUNCATION_NOTE = "(로그 일부만 표시 — 전문은 preflight check --json)"
 
@@ -125,9 +130,13 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
     if head.startswith("Traceback (most recent call last)") and len(lines) > 1:
         head = lines[1]
     head = head.strip()
-    head_budget = 80
+    # 들여쓰기 4칸 + 이 줄이 80칸 콘솔에 들어와야 한다 — 넘치면 rich가 "…"로 잘라
+    # 또 줄 번호가 사라진다(QA 실측, #56).
+    head_budget = 72
     if len(head) > head_budget:
-        head = head[: head_budget - 1] + "…"
+        # 프레임 줄은 정보가 뒤에 있다(파일명·줄 번호·함수명) — 앞을 남기면 긴
+        # 설치 경로에선 사용자 홈 경로 조각만 남고 정작 필요한 끝이 잘린다(#56).
+        head = "…" + head[-(head_budget - 1) :]
 
     tail_budget = max(max_chars - len(head) - 1, 40)
     last_line = lines[-1].strip()
@@ -230,11 +239,32 @@ def _memory_headroom_line(result: dict) -> _Line | None:
     return _Line("⚠", "yellow", f"VRAM 여유    {detail}", is_problem=True)
 
 
-def _quant_lines(result: dict) -> list[_Line]:
-    """기본 체크 전용 줄(들)이다 — cli.md의 --model 예시에는 이 줄이 없다.
+def _quant_fallback_line(result: dict, model_mode: bool = False) -> _Line | None:
+    """4bit 폴백이 있었다는 정보성 줄. 폴백이 아니면 None.
 
-    --model 모드는 raw 스키마에 quant_backend가 있어도 4bit 레이어 자체를
-    별도로 보여주지 않고 대신 VRAM·목표 크기 줄을 보여준다(_build_lines 참고).
+    두 모드가 공유하되 문구는 다르다. 기본 체크 문구의 "(device=cpu 판정 생략)"은
+    --model 모드에선 틀린 말이고, 그쪽에서 정작 알려야 할 것은 **화면의 VRAM 실측이
+    QLoRA가 아니라 fp32 전체 모델 기준**이라는 사실이다 — 4bit이었다면 훨씬 작았을
+    숫자라, 폴백 사실을 모르면 사용자는 "이 GPU로는 무리"라는 반대 결론을 낸다(#66).
+    """
+    if result.get("quant_backend") != "nn-linear-fallback" and (
+        "quant_fallback" not in result.get("reasons", [])
+    ):
+        return None
+
+    message = (
+        _MODEL_MODE_QUANT_FALLBACK_MESSAGE if model_mode else _REASON_MESSAGES["quant_fallback"]
+    )
+    return _Line("ℹ", "dim", f"4bit 레이어 폴백    {message}", is_problem=False)
+
+
+def _quant_lines(result: dict) -> list[_Line]:
+    """기본 체크의 4bit 레이어 줄(들)이다.
+
+    --model 모드는 4bit 레이어 자체를 판정 항목으로 보여주지 않고 VRAM·목표 크기
+    줄을 보여준다. 단 **폴백 줄만은 --model 모드에도 나간다**(_build_lines 참고) —
+    폴백은 판정이 아니라 "지금 화면의 숫자가 무엇으로 측정된 값인지"를 말해주는
+    정보라서, 없으면 fp32 기준 VRAM을 QLoRA 기준으로 오독하게 된다(#66).
 
     device=cpu FAIL과 quant_fallback 정보성 표시는 judge.py에서 독립 조건이라
     (#18) 동시에 참일 수 있다 — quant_backend="nn-linear-fallback" 인데
@@ -242,7 +272,6 @@ def _quant_lines(result: dict) -> list[_Line]:
     "문제 있음"이 화면에서 사라지지 않는다. 리스트를 돌려주는 이유가 이거다.
     """
     reasons = result.get("reasons", [])
-    quant_backend = result.get("quant_backend")
     device = result.get("device")
     lines: list[_Line] = []
 
@@ -256,15 +285,9 @@ def _quant_lines(result: dict) -> list[_Line]:
             )
         )
 
-    if quant_backend == "nn-linear-fallback" or "quant_fallback" in reasons:
-        lines.append(
-            _Line(
-                "ℹ",
-                "dim",
-                f"4bit 레이어 폴백    {_REASON_MESSAGES['quant_fallback']}",
-                is_problem=False,
-            )
-        )
+    fallback_line = _quant_fallback_line(result)
+    if fallback_line is not None:
+        lines.append(fallback_line)
 
     if not lines:
         # bnb-4bit + cuda: 문제도 폴백도 없는 정상 케이스만 여기 도달한다.
@@ -315,9 +338,13 @@ def _build_lines(result: dict) -> list[_Line]:
         return lines
 
     if _is_model_mode(result):
-        # --model 모드: VRAM 실측 + (가능하면) 목표 크기 적합 — quant 줄은 없다
-        # (cli.md의 --model 예시 참고, 기본 체크 전용 줄이다).
+        # --model 모드: VRAM 실측 + (가능하면) 목표 크기 적합 — 4bit 레이어 판정
+        # 줄은 없다(cli.md의 --model 예시 참고, 기본 체크 전용 줄이다). 폴백 줄은
+        # 판정이 아니라 위 VRAM 숫자의 전제를 밝히는 정보라 여기서도 그린다(#66).
         lines.append(_vram_line(result))
+        fallback_line = _quant_fallback_line(result, model_mode=True)
+        if fallback_line is not None:
+            lines.append(fallback_line)
         target_line = _target_size_line(result)
         if target_line is not None:
             lines.append(target_line)
@@ -382,7 +409,9 @@ def _render_text(results: list[dict], elapsed_seconds: float | None, notices: li
         if show_group_labels:
             if index > 0:
                 console.print()
-            console.print(f"[bold]{_group_label(result)}[/bold]")
+            # model_name은 --model로 받은 사용자 입력이라 대괄호가 rich 마크업으로
+            # 먹힐 수 있다 — error_log(아래 detail)와 같은 이유로 escape한다(#67).
+            console.print(f"[bold]{escape(_group_label(result))}[/bold]")
 
         lines = _build_lines(result)
         all_lines.extend(lines)
@@ -396,7 +425,9 @@ def _render_text(results: list[dict], elapsed_seconds: float | None, notices: li
             if line.detail:
                 # error_log는 자유 텍스트라 "[stderr]" 같은 대괄호가 rich 마크업으로
                 # 먹혀 사라지거나(실측), "[/x]" 꼴이면 MarkupError로 죽는다 — escape한다.
-                console.print(f"    [dim]{escape(line.detail)}[/dim]")
+                # overflow="fold": 폭을 넘는 긴 경로를 "…"로 잘라내지 않고 접는다 — 글자를
+                # 버리면 파일명·줄 번호가 사라진다(#56).
+                console.print(f"    [dim]{escape(line.detail)}[/dim]", overflow="fold")
 
     # FIX 블록은 개별 체크 블록 사이가 아니라 **전부 그린 뒤 한 번에** 나온다
     # (cli.md "출력 예시"). 체크 블록 사이에 끼면 "무엇이 문제인가"를 읽는 흐름이
