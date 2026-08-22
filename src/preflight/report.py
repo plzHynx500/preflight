@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from rich.console import Console
 from rich.markup import escape
@@ -113,6 +114,12 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
     이름이 맨 앞에 오므로 앞뒤를 반씩 남긴다 — 첫 프레임/마지막 줄 논리를 그대로
     태우면 같은 줄이 head와 tail에 중복돼 출력이 입력보다 길어진다(PR #48 리뷰).
 
+    **꼬리의 기준은 "마지막 줄"이 아니라 "마지막 예외 줄"이다(#62).** 위 규칙은
+    단일 트레이스백을 전제로 했는데, 체인된 예외에서는 최종 예외 뒤에 부연 설명이
+    더 붙는다 — 모델명 오타 시 마지막 줄이 "If this is a private repository, make
+    sure to pass a token…"이라, 정작 정확한 진단인 `OSError: ... is not a valid
+    model identifier` 줄이 밀려나고 화면에는 토큰 얘기만 남았다.
+
     줄였을 때는 마지막에 안내 한 줄을 덧붙인다. 가장 짧은 실패 로그(torch 미설치)도
     230자라 사실상 모든 에러가 잘리는데, 잘렸다는 말이 없으면 사용자는 그게
     전부라고 믿는다. 전문은 --json에 그대로 있다.
@@ -126,10 +133,10 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
         half = (max_chars - 1) // 2
         return f"{text[:half]}…{text[-half:]}\n{_TRUNCATION_NOTE}"
 
-    head = lines[0]
-    if head.startswith("Traceback (most recent call last)") and len(lines) > 1:
-        head = lines[1]
-    head = head.strip()
+    head_index = 0
+    if lines[0].startswith("Traceback (most recent call last)") and len(lines) > 1:
+        head_index = 1
+    head = lines[head_index].strip()
     # 들여쓰기 4칸 + 이 줄이 80칸 콘솔에 들어와야 한다 — 넘치면 rich가 "…"로 잘라
     # 또 줄 번호가 사라진다(QA 실측, #56).
     head_budget = 72
@@ -139,20 +146,54 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
         head = "…" + head[-(head_budget - 1) :]
 
     tail_budget = max(max_chars - len(head) - 1, 40)
-    last_line = lines[-1].strip()
-    if len(last_line) >= tail_budget:
-        # 마지막 줄 자체가 예산보다 길면 그 줄만이라도 통째로 — 절대 앞을 자르지 않는다.
-        tail = last_line
-    else:
-        start = len(text) - tail_budget
-        # 줄 중간에서 시작하면 그 조각은 버리고 다음 줄부터 — 마지막 줄은 항상 남는다.
-        if text[start - 1] != "\n":
-            newline = text.find("\n", start)
-            if newline != -1:
-                start = newline + 1
-        tail = text[start:]
+    # 꼬리가 head 줄까지 거슬러 올라가면 같은 줄이 두 번 찍힌다.
+    tail = _select_tail(lines, tail_budget, min_start=head_index + 1)
 
     return f"{head}\n…\n{tail}\n{_TRUNCATION_NOTE}"
+
+
+#: 트레이스백에서 "예외 줄"로 볼 패턴 — `OSError: ...`,
+#: `huggingface_hub.errors.RepositoryNotFoundError: ...` 처럼 공백 없는 예외 이름
+#: 뒤에 곧바로 ": "가 오는 줄. 소스 코드 줄이나 "Repository Not Found for url: ..."
+#: 같은 설명 줄은 이름 자리에 공백이 있어 걸리지 않는다.
+_EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit): ")
+
+
+def _select_tail(lines: list[str], tail_budget: int, min_start: int = 0) -> str:
+    """예산 안에서 남길 뒤쪽 줄들. **마지막 예외 줄은 어떤 경우에도 버리지 않는다.**
+
+    기준선(anchor)을 마지막 예외 줄로 잡고 두 방향으로 조정한다.
+
+    1. anchor 이후의 부연 설명 줄부터 버려서 예산을 맞춘다 — 체인된 예외에서
+       사용자를 엉뚱한 곳으로 보내는 게 바로 이 줄들이다(#62의 token 안내).
+    2. 그러고도 예산이 남으면 anchor 앞쪽으로 넓힌다 — 단일 트레이스백에서는
+       anchor가 곧 마지막 줄이라, 이 확장이 기존 동작(예산만큼 뒤쪽 줄들)을
+       그대로 재현한다.
+
+    예외 줄을 못 찾으면 마지막 줄을 anchor로 삼는다(기존 동작). `min_start`는 head로
+    이미 찍은 줄을 꼬리가 다시 삼키지 않게 막는 하한선이다.
+
+    anchor 한 줄이 예산보다 길어도 그 줄은 통째로 남긴다 — 앞을 자르면 예외
+    타입만 남고 정작 메시지가 사라진다.
+    """
+    anchor = len(lines) - 1
+    for index in range(len(lines) - 1, min_start - 1, -1):
+        if _EXCEPTION_LINE.match(lines[index].strip()):
+            anchor = index
+            break
+
+    def joined(start: int, end: int) -> str:
+        return "\n".join(line.strip() for line in lines[start:end]).strip()
+
+    end = len(lines)
+    while end - 1 > anchor and len(joined(anchor, end)) > tail_budget:
+        end -= 1
+
+    start = anchor
+    while start > min_start and len(joined(start - 1, end)) <= tail_budget:
+        start -= 1
+
+    return joined(start, end)
 
 
 def _timing_line(result: dict) -> _Line:

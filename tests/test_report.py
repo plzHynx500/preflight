@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from preflight.canary.judge import judge_result
-from preflight.report import render_report
+from preflight.report import _truncate_error_log, render_report
 
 _OK_RAW = {
     "status": "ok",
@@ -726,6 +726,96 @@ def test_render_report_short_error_log_has_no_truncation_note(capsys) -> None:
 
     out = capsys.readouterr().out
     assert "일부만" not in out
+
+
+# ── 체인된 예외의 꼬리 (#62) ──────────────────────────────────────────────────
+#
+# HF Hub는 없는 저장소에도 404가 아니라 401을 돌려주고, transformers가 그것을
+# 3단으로 체인해 올린다. #43의 "첫 프레임 + … + 마지막 줄" 규칙은 단일 트레이스백을
+# 전제해서, 최종 예외 뒤에 붙는 부연 설명("private repository … token")이 화면을
+# 차지하고 정작 정확한 진단 줄이 밀려났다 — 오타를 낸 사용자가 토큰을 찾으러 갔다.
+
+_CHAINED_TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "site-packages/huggingface_hub/utils/_http.py", line 409, in hf_raise_for_status\n'
+    "    response.raise_for_status()\n"
+    "httpx.HTTPStatusError: Client error '401 Unauthorized' for url "
+    "'https://huggingface.co/this-org-does-not-exist/definitely-not-a-model/"
+    "resolve/main/config.json'\n"
+    "\n"
+    "The above exception was the direct cause of the following exception:\n"
+    "\n"
+    "Traceback (most recent call last):\n"
+    '  File "site-packages/transformers/utils/hub.py", line 470, in cached_file\n'
+    "    resolved_file = hf_hub_download(path_or_repo_id, filename)\n"
+    "huggingface_hub.errors.RepositoryNotFoundError: 401 Client Error. "
+    "(Request ID: Root=1-68a7c0f1)\n"
+    "\n"
+    "Repository Not Found for url: "
+    "https://huggingface.co/this-org-does-not-exist/definitely-not-a-model/"
+    "resolve/main/config.json.\n"
+    "Please make sure you specified the correct `repo_id` and `repo_type`.\n"
+    "\n"
+    "The above exception was the direct cause of the following exception:\n"
+    "\n"
+    "Traceback (most recent call last):\n"
+    '  File "site-packages/transformers/models/auto/configuration_auto.py", line 1108, '
+    "in from_pretrained\n"
+    "    config_dict, unused_kwargs = PretrainedConfig.get_config_dict(...)\n"
+    "OSError: this-org-does-not-exist/definitely-not-a-model is not a local folder and is "
+    "not a valid model identifier listed on 'https://huggingface.co/models'\n"
+    "If this is a private repository, make sure to pass a token having permission to this "
+    "repo either by logging in with `hf auth login` or by passing `token=<your_token>`"
+)
+
+
+def test_render_report_chained_exception_keeps_final_exception_line(capsys) -> None:
+    """체인된 예외에서는 마지막 줄이 아니라 마지막 **예외 줄**이 꼬리의 기준이다(#62)."""
+    raw = {**_OK_RAW, "status": "error", "error_log": _CHAINED_TRACEBACK}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out.replace("\n", "")
+    assert "not a valid model identifier" in out
+
+
+def test_render_report_chained_exception_hides_misleading_token_hint(capsys) -> None:
+    """모델명 오타인데 401·token이 보이면 사용자가 인증 문제로 오해한다(#62)."""
+    raw = {**_OK_RAW, "status": "error", "error_log": _CHAINED_TRACEBACK}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out.replace("\n", "")
+    assert "token=<your_token>" not in out
+    assert "401" not in out
+
+
+def test_render_report_single_traceback_tail_is_unchanged(capsys) -> None:
+    """단일 트레이스백에서는 마지막 줄이 곧 마지막 예외 줄이라 기존 동작 그대로다."""
+    raw = {**_OK_RAW, "status": "import_crash", "error_log": _LONG_TRACEBACK}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out.replace("\n", "")
+    assert "ModuleNotFoundError: No module named 'torch'" in out
+    assert "line 77, in main" in out
+
+
+def test_truncate_error_log_keeps_whole_exception_line_over_budget() -> None:
+    """예외 줄 하나가 예산보다 길어도 앞을 자르지 않는다 — 타입만 남고 메시지가 사라진다."""
+    long_message = "x" * 400
+    log = (
+        "Traceback (most recent call last):\n"
+        '  File "a.py", line 1, in <module>\n'
+        "    boom()\n"
+        f"OSError: {long_message}\n"
+        "If this is a private repository, make sure to pass a token"
+    )
+
+    result = _truncate_error_log(log)
+
+    assert f"OSError: {long_message}" in result
+    assert "private repository" not in result
 
 
 def test_render_report_long_path_first_frame_keeps_file_and_line(capsys) -> None:
