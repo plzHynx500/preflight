@@ -136,6 +136,28 @@ def test_render_report_with_fix_shows_fix_command(capsys) -> None:
     assert "재확인: preflight check --yes" in out
 
 
+def test_render_report_with_fix_long_command_stays_one_line(capsys, monkeypatch) -> None:
+    """#91: 좁은 터미널 폭에서도 FIX 줄에 실제 개행 문자가 끼어들면 안 된다 —
+    끼어들면 복사해 붙였을 때 --index-url과 값이 갈라진다."""
+    monkeypatch.setenv("COLUMNS", "40")
+    long_command = (
+        r"C:\Users\tkddu\preflight-test\.venv\Scripts\python.exe -m pip install "
+        r"--force-reinstall torch --index-url https://download.pytorch.org/whl/cu124"
+    )
+    raw = {**_OK_RAW, "status": "oom", "memory_delta_mb": None, "elapsed_ms": None}
+    result = judge_result(raw)
+    result["fix"] = {
+        "cause": "oom",
+        "message": "CUDA Out of Memory",
+        "fix_command": long_command,
+    }
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert f"FIX: {long_command}" in out
+
+
 def test_render_report_with_fix_command_none_shows_message_only(capsys) -> None:
     raw = {**_OK_RAW, "status": "oom", "memory_delta_mb": None, "elapsed_ms": None}
     result = judge_result(raw)

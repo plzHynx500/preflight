@@ -413,7 +413,11 @@ def _render_fix_block(console: Console, result: dict) -> None:
         return
     fix_command = fix.get("fix_command")
     if fix_command:
-        console.print(f"FIX: {fix_command}")
+        # soft_wrap=True: rich 기본값은 콘솔 폭에 맞춰 문자열에 실제 개행 문자를
+        # 끼워 넣는다 — 터미널에서는 감싸진 것처럼 보이지만 복사하면 그 개행이
+        # 따라와 --index-url과 값이 분리된다(#91). soft_wrap은 자르지 않고
+        # 터미널에 맡겨 문자열 자체에는 개행이 없게 한다.
+        console.print(f"FIX: {fix_command}", soft_wrap=True)
         console.print("재확인: preflight check --yes")
     else:
         message = fix.get("message", "")
