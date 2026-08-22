@@ -244,13 +244,19 @@ FAIL 4개·WARN 2개, 총 6개 판정 항목 전부 MVP 구현으로 팀이 확�
 
 ```python
 def suggest_fix(check_result: dict) -> dict | None:
-    """실행하지 않는다 — 명령어 텍스트만 반환. verdict가 PASS면 None."""
+    """실행하지 않는다 — 명령어만 반환. verdict가 PASS면 None."""
     return {
         "cause": "bnb_not_compiled_with_cuda",
         "message": "bitsandbytes가 CUDA 지원 없이 빌드됨",
-        "fix_command": "pip install bitsandbytes --upgrade --force-reinstall",
+        # 표시용(그대로 복사해 쓸 수 있는 문자열)
+        "fix_command": "/home/user/venv/bin/python -m pip install bitsandbytes --upgrade --force-reinstall",
+        # 실행용(FixExecutor가 그대로 subprocess에 넘긴다)
+        "fix_argv": ["/home/user/venv/bin/python", "-m", "pip", "install",
+                     "bitsandbytes", "--upgrade", "--force-reinstall"],
     }
 ```
+
+명령은 PATH의 `pip`이 아니라 `sys.executable`을 앞에 세운다 — 진단한 환경과 다른 환경에 설치되는 것을 막기 위해서다([cli.md](cli.md)의 `fix_command`·`fix_argv` 절). 실행할 명령이 없는 원인은 두 값이 모두 `None`이다. `apply_fix`는 `fix_argv`를 쓰고, 없으면 예전 계약대로 `fix_command`를 `shlex.split`한다.
 
 `reasons`만으로 충분한 경우(WARN 두 개, OOM)는 바로 fix 문구로 이어지고, `import_crash`나 `device=cpu`처럼 원인이 여러 갈래인 경우는 `error_log`나 `env` 같은 부가 정보를 추가로 조회해서 확정한다. **이 부가 정보를 직접 import해서 알아내면 안 된다** — 자식이 `env`에 실어 보낸 값을 읽어야 한다(위 `env` 절 참고). 실제 실행(`--yes`일 때)은 이 함수 밖, FixExecutor에 있다.
 
@@ -269,9 +275,9 @@ def suggest_fix(check_result: dict) -> dict | None:
 2. `judge_result()`로 `verdict`·`reasons`를 얹는다
 3. (verdict가 PASS가 아닐 때만) `suggest_fix()`로 원인 분류 + 해결 명령어 생성
 4. 판정 + 해결 명령어를 리포트로 출력한다. **`--yes` 없으면 실행은 여기서 끝난다**
-5. (`--yes`가 있을 때만) 명령어를 실제로 실행
-6. (`--yes`가 있을 때만) `run_canary_check()`를 다시 호출해 재검증
-7. 최종 판정 기준으로 종료코드 반환. `--yes` 없이 4번에서 끝났다면 2번의 1차 판정이 그대로 쓰인다
+5. (`--yes`가 있을 때만, 그리고 **실행할 명령이 있을 때만**) 명령어를 실제로 실행. 실행할 명령이 없거나 실행이 실패하면 6번을 건너뛰고 그 사실을 `notices`로 알린다
+6. (5번이 성공했을 때만) `query_gpu_state()`와 `run_canary_check()`를 다시 호출해 **FIX의 근거가 된 그 체크를 같은 조건으로** 재검증하고, 결과를 그 항목에 갈아끼운다
+7. 최종 판정 기준으로 종료코드 반환. `--yes` 없이 4번에서 끝났거나 6번을 건너뛰었다면 2번의 1차 판정이 그대로 쓰인다
 
 `--yes` 없이 실행한 사용자는 화면의 해결 명령어를 직접 실행한 뒤 `preflight check`를 다시 돌려 확인하는 수동 루프를 탄다. `--yes`는 이 과정(5·6번)을 자동화할 뿐이다.
 

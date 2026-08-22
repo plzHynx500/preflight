@@ -428,16 +428,22 @@ def _group_label(result: dict) -> str:
     순서 추론은 결과가 하나뿐인 경우에는 아예 정보가 없고, 여럿이라도 실행
     순서가 바뀌면 깨진다).
     """
-    if _is_model_mode(result):
-        return f"모델 체크: {result['model_name']}"
-    return "기본 체크"
+    label = f"모델 체크: {result['model_name']}" if _is_model_mode(result) else "기본 체크"
+    if result.get("reverified"):
+        # --yes로 수정을 실행한 뒤 다시 측정한 블록이다. 표시가 없으면 1차 실행
+        # 결과와 구별되지 않아, 사용자는 화면의 ✔이 수정 덕분인지 원래 그랬는지
+        # 알 수 없다(#57).
+        label += " (재확인)"
+    return label
 
 
-def _render_text(results: list[dict], elapsed_seconds: float | None) -> None:
+def _render_text(results: list[dict], elapsed_seconds: float | None, notices: list[str]) -> None:
     console = Console()
     # 결과가 2개 이상(기본 체크 + --model 체크)일 때만 구분 표제를 붙인다 —
     # 단일 결과(기존 출력)는 지금까지의 화면 그대로 유지해 하위 호환을 지킨다.
-    show_group_labels = len(results) > 1
+    # 재확인한 블록만은 결과가 하나여도 표제를 붙인다 — "(재확인)"이라는 사실
+    # 자체가 표제에만 있어서, 안 붙이면 수정 전후 화면이 똑같아진다.
+    show_group_labels = len(results) > 1 or any(r.get("reverified") for r in results)
 
     all_lines: list[_Line] = []
     for index, result in enumerate(results):
@@ -472,6 +478,14 @@ def _render_text(results: list[dict], elapsed_seconds: float | None) -> None:
         if result.get("verdict") != "PASS" and result.get("fix"):
             console.print()
             _render_fix_block(console, result)
+
+    # --yes가 무엇을 했는지(또는 왜 아무것도 안 했는지)를 알리는 줄이다. FIX 블록
+    # 다음, 요약 줄 앞에 온다 — "무엇이 문제인가 → 무엇을 해야 하는가 → 도구가
+    # 실제로 무엇을 했는가" 순서다.
+    if notices:
+        console.print()
+        for notice in notices:
+            console.print(escape(notice))
 
     console.print()
 
@@ -517,7 +531,7 @@ def _compute_summary(results: list[dict], elapsed_seconds: float | None) -> dict
     }
 
 
-def _render_json(results: list[dict], elapsed_seconds: float | None) -> None:
+def _render_json(results: list[dict], elapsed_seconds: float | None, notices: list[str]) -> None:
     summary = _compute_summary(results, elapsed_seconds)
     # 생략된 항목은 verdict 자체가 없다 — 판정에서 빼고 본다. 실제로는 생략이
     # 기본 체크 FAIL일 때만 일어나 결과가 뒤집히진 않지만, "우연히 맞는" 상태를
@@ -527,6 +541,7 @@ def _render_json(results: list[dict], elapsed_seconds: float | None) -> None:
     payload = {
         "results": results,
         "summary": summary,
+        "notices": notices,
         "exit_code_hint": exit_code_hint,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -536,14 +551,20 @@ def render_report(
     results: list[dict],
     json_output: bool = False,
     elapsed_seconds: float | None = None,
+    notices: list[str] | None = None,
 ) -> None:
     """results(judge_result() 출력 목록, 선택적으로 "fix" 키 병합)를 화면 또는 JSON으로 출력한다.
+
+    `notices`는 판정이 아니라 **도구가 한 일**을 알리는 줄이다(`--yes`가 실행한
+    명령, 실행할 명령이 없었다는 사실, 수정 실패). 텍스트 모드에서는 요약 줄 앞에,
+    JSON 모드에서는 `notices` 배열로 나간다 — 자동화 쪽도 `--yes`가 실제로 뭘
+    했는지 알아야 하기 때문이다(#53·#57).
 
     exit code 계산은 이 함수의 책임이 아니다 — 호출한 쪽(cli.py)이 results를 보고 직접
     판단한다(WARN/FAIL 구분은 cli.md에서도 아직 미확정). JSON 모드의 exit_code_hint는
     참고용 힌트일 뿐, 이 함수는 sys.exit을 호출하지 않는다.
     """
     if json_output:
-        _render_json(results, elapsed_seconds)
+        _render_json(results, elapsed_seconds, notices or [])
     else:
-        _render_text(results, elapsed_seconds)
+        _render_text(results, elapsed_seconds, notices or [])

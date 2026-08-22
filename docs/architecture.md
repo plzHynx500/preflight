@@ -233,7 +233,7 @@ conda, poetry, venv, Docker 등 가상환경 관리 방식이 사용자마다 �
 
 | 탐지 항목 | 판정 | FIX 방향(안) |
 |---|---|---|
-| Import 크래시 | FAIL | 로그에 bitsandbytes 시그니처가 있을 때만 `pip install bitsandbytes --upgrade --force-reinstall`. CUDA 런타임·드라이버 계열은 명령 없이 로그 안내(#51) |
+| Import 크래시 | FAIL | 로그에 bitsandbytes 시그니처가 있을 때만 `<sys.executable> -m pip install bitsandbytes --upgrade --force-reinstall`(PATH의 `pip`을 쓰면 진단한 환경과 다른 곳에 설치될 수 있다 — [cli.md](contracts/cli.md) 참고). CUDA 런타임·드라이버 계열은 명령 없이 로그 안내(#51) |
 | OOM(`--model` 목표 크기 실행 시) | FAIL | batch_size 축소 또는 quantization 적용 안내 |
 | 4bit 레이어 device=cpu 감지 | FAIL | `env`를 신뢰도 순으로 읽어 분기한다 — CPU 전용 torch 빌드(GPU 있으면 CUDA 빌드 재설치 FIX) → NVIDIA GPU/드라이버 미검출 안내 → CUDA 장치 가려짐 안내. `compiled_with_cuda`는 단독 근거로 쓰지 않는다(#55·#72) |
 | CPU 대비 배수 2배 미만 | WARN | 원인 특정 어려운 회색지대 — 성능 저하 가능성 안내 수준으로 예상 |

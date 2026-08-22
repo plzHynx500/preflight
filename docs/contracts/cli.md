@@ -48,13 +48,33 @@ FAIL 이 하나라도 있으면        →  FAIL
 
 **생략된 항목(`skipped`)은 집계에도 문제 개수에도 넣지 않는다** — 판정된 적이 없기 때문이다. 생략은 기본 체크가 FAIL일 때만 일어나므로 최종 판정은 어차피 FAIL이다.
 
+## `--yes` — 수정 실행과 재확인
+
+`--yes`는 화면에 제시된 수정 명령을 실제로 실행하고 재확인까지 자동화한다. 세 갈래로 갈린다.
+
+| 상황 | 동작 |
+|---|---|
+| 실행할 명령이 있다 | 명령 실행 → **그 FIX의 근거가 된 체크**를 같은 조건으로 재실행 → 결과 갈아끼움 |
+| 실행할 명령이 없다(`fix_command`가 `null`) | 아무것도 실행하지 않고 `notices`로 알린다. **canary를 다시 돌리지 않는다** |
+| 명령 실행이 실패했다 | 재확인을 건너뛰고 `notices`로 알린다. 트레이스백은 노출하지 않는다 |
+
+**재확인 대상은 FIX가 붙은 그 항목 하나다.** 그 항목의 `model_name`·`batch_size`·`seq_len`을 그대로 물려 재실행한다 — 기본 체크가 FAIL이라 모델 체크가 생략된 상태에서 `--model`이 주어졌다는 이유로 한 번도 실행된 적 없는 모델 canary를 돌리지 않는다. 재확인 경로도 canary 기동 직전에 `query_gpu_state()`를 **다시** 조회해 `env`에 병합한다(값이 1차와 달라지는 것이 맞는 동작이다 — 알고 싶은 건 수정 이후 시점의 여유 VRAM이고, 이 값이 없으면 `memory_delta_high` WARN이 구조적으로 다시 나올 수 없다).
+
+재확인한 항목은 `results`에서 **재확인 결과로 교체된다**. 이때 CLI가 얹은 값(`model_name`·`batch_size`·`seq_len`)과 실행한 `fix`는 유지되고 `reverified: true`가 붙는다. 재확인하지 않은 나머지 항목은 1차 판정 그대로 남는다.
+
+### FIX를 붙일 항목 선택
+
+`verdict`가 PASS가 아닌 항목이 여럿이면 **FAIL을 WARN보다 먼저** 본다. FAIL이 여럿이면 그중 첫 번째다. 배열 순서만 보면 기본 체크 WARN + 모델 체크 FAIL에서 WARN에 FIX가 붙어, 화면은 FAIL을 띄워놓고 안내는 WARN 것을 하게 된다. FIX 블록은 MVP에서 **하나만** 나온다.
+
 ## 종료 코드
 
-**위에서 집계된 단일 `verdict`** 에 따라 규격화된 종료 코드를 반환한다. `--yes` 옵션으로 수정 후 재확인(`ReVerifier`) 수행 시 1차 판정이 아닌 재확인 최종 결과 기준의 종료 코드를 반환한다.
+**위에서 집계된 단일 `verdict`** 에 따라 규격화된 종료 코드를 반환한다.
 
 - `0`: 모든 판정 항목이 **PASS**인 경우
 - `1`: 최종 판정이 **FAIL**인 경우
 - `2`: FAIL 없이 **WARN**만 포함된 경우
+
+`--yes`로 재확인을 수행했으면, 재확인 결과로 교체된 `results` **전체를 다시 집계한** 값이 기준이다 — 재확인 1건의 판정으로 전체를 대체하지 않는다(그러면 재확인하지 않은 항목의 WARN·FAIL이 종료 코드에서 사라진다). 재확인이 일어나지 않았으면(실행할 명령이 없었거나 명령 실행이 실패했으면) 1차 판정이 그대로 기준이다 — 수정 실패에 별도 종료 코드를 두지 않는다.
 
 > **주의**: 외부 CI/CD 도구(예: GitHub Actions `run` 스텝, Jenkins 등)는 `0`이 아닌 모든 종료 코드(`1`, `2`)를 파이프라인 실패(Error)로 취급할 수 있다. WARN(`2`)을 파이프라인 중단 오류로 취급하지 않고 후속 작업을 진행하려면 스크립트에서 종료 코드를 명시적으로 분기 처리해야 한다(예: `preflight check || [ $? -eq 2 ]`).
 
@@ -67,7 +87,7 @@ $ preflight check
 ✔ 실행 시간 12ms                CPU 대비 41배 (정상 범위)
 ✖ bitsandbytes 4bit 레이어      device=cpu 감지 → 조용한 CPU 폴백
 
-FIX: pip install bitsandbytes --upgrade --force-reinstall
+FIX: /home/user/venv/bin/python -m pip install bitsandbytes --upgrade --force-reinstall
 재확인: preflight check --yes
 
 3개 항목 확인 · 1개 문제 발견 · 소요 시간 4초
@@ -139,7 +159,7 @@ $ preflight check --model meta-llama/Llama-3.1-8B --batch-size 2 --seq-len 2048
 모델 체크: meta-llama/Llama-3.1-8B
 — 환경 체크 실패로 생략
 
-FIX: pip install bitsandbytes --upgrade --force-reinstall
+FIX: /home/user/venv/bin/python -m pip install bitsandbytes --upgrade --force-reinstall
 재확인: preflight check --yes
 
 3개 항목 확인 · 1개 문제 발견 · 소요 시간 5초
@@ -151,6 +171,8 @@ FIX: pip install bitsandbytes --upgrade --force-reinstall
 체크가 index 0) 가공 없이 담는다 — 표제는 텍스트 출력 전용이다.
 
 `--json`은 사람이 읽는 위 출력 대신, 다른 도구가 파싱하기 쉬운 아래 구조를 표준출력에 그대로 찍는다(`print()`로 출력 — 파이핑 시 색상 코드 등이 섞이지 않는다). `results`는 `judge_result()` 출력(및 있다면 `suggest_fix()` 결과를 병합한 `"fix"` 키)을 가공 없이 그대로 담고, `summary`는 위 요약 줄과 동일한 집계다. `exit_code_hint`는 WARN·FAIL 유무를 미리 계산해둔 참고값일 뿐 — 실제 종료 코드는 CLI 진입점이 결정한다.
+
+`notices`는 **판정이 아니라 도구가 한 일**을 담는 문자열 배열이다(`--yes`가 실행한 명령, 실행할 명령이 없었다는 사실, 수정 실패). 텍스트 모드에서는 요약 줄 앞에 같은 내용이 나온다. `--yes` 없이 실행하면 항상 빈 배열이다. 수정 명령이 실패해도 pip의 stdout/stderr는 싣지 않는다 — 그대로 흘리면 화면이 길게 쏟아지므로, 대신 명령을 직접 실행해 확인하라고 안내한다.
 
 > `summary.total_items`는 `results` 배열의 원소 개수가 아니라, 텍스트 모드에서 찍히는 항목 줄 개수(위 기본 체크 예시의 "3개 항목")와 같은 값이다 — 아래 예시는 canary 실행 1건(`results` 원소 1개)에서 status·실행시간·quant 세 줄이 나오는 경우라 `total_items`가 3이다.
 
@@ -180,14 +202,18 @@ $ preflight check --json
       "fix": {
         "cause": "torch_cpu_only_build",
         "message": "설치된 torch가 CPU 전용 빌드다 (torch.version.cuda 없음) — NVIDIA GPU는 감지됐으므로 CUDA 빌드 torch로 재설치하면 GPU를 쓸 수 있다",
-        "fix_command": "pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu124"
+        "fix_command": "/home/user/venv/bin/python -m pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu124",
+        "fix_argv": ["/home/user/venv/bin/python", "-m", "pip", "install", "--force-reinstall", "torch", "--index-url", "https://download.pytorch.org/whl/cu124"]
       }
     }
   ],
   "summary": { "total_items": 3, "pass": 2, "warn": 0, "fail": 1, "elapsed_seconds": 4.0 },
+  "notices": [],
   "exit_code_hint": 1
 }
 ```
+
+`fix_command`는 **화면 표시용이자 사용자가 그대로 복사해 쓸 문자열**이고, `fix_argv`는 **실제로 실행되는 인자 리스트**다. 둘 다 PATH의 `pip`이 아니라 `sys.executable`(= 지금 preflight를 돌리고 있는 파이썬)을 가리킨다 — venv를 활성화하지 않았거나 pipx·전역 설치로 쓰는 환경에서 "진단은 A 환경, 수정은 B 환경"이 되면 재확인이 계속 실패해도 사용자는 이유를 알 수 없다. 짧게 보이려고 `python -m pip`으로 줄이지 않는 이유도 같다 — 복사해 붙이는 순간 다시 "지금 활성화된 파이썬"으로 돌아간다. 공백이 든 경로(`C:\Program Files\...`)는 `fix_command`에서 큰따옴표로 감싸고, 실행은 `fix_argv`를 쓰므로 그 문자열을 다시 파싱하지 않는다. 실행할 명령이 없는 원인은 두 값이 모두 `null`이다.
 
 ## 리포트 입력 스키마
 
@@ -198,7 +224,8 @@ $ preflight check --json
 | `model_name` | 모델 체크 항목에만 | `--model` 값. 표제(`모델 체크: <name>`)와 **기본/모델 체크 구분**에 쓰인다 |
 | `batch_size` · `seq_len` | 모델 체크 항목에만 | `--batch-size`·`--seq-len` 값. "목표 배치 크기 적합" 줄에 쓰인다 |
 | `skipped` | 생략된 항목에만 | 생략 사유 문자열. 이 키가 있으면 `verdict`·`reasons`가 없다 |
-| `fix` | `verdict != "PASS"`인 항목에만 | `suggest_fix()` 반환값 |
+| `fix` | FIX 대상으로 뽑힌 항목에만 | `suggest_fix()` 반환값. `--yes`로 그 수정을 실행한 뒤에는 재확인 결과가 PASS여도 **어떤 수정을 했는지 남기려고 그대로 유지된다** |
+| `reverified` | `--yes`로 재확인한 항목에만 | `True`. 표제에 `(재확인)`을 붙이는 데 쓰인다 |
 
 **기본 체크와 모델 체크는 `model_name`의 유무로 구분한다.** 순서(index)나 `cpu_multiplier`가 `None`인지로 추론하지 않는다 — 기본 체크도 CPU 기준선 측정에 실패하면 `cpu_multiplier`가 `None`이라 오인된다.
 
