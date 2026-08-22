@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from preflight.cli import app, get_exit_code
+from preflight.cli import _select_fix_target, app, get_exit_code
 
 runner = CliRunner()
 
@@ -201,3 +201,60 @@ def test_cli_check_with_model_injects_gpu_state() -> None:
         assert model_call_arg["env"]["dummy"] == 2
         assert model_call_arg["env"]["gpu_free_mb"] == 10000
         assert model_call_arg["env"]["gpu_total_mb"] == 12000
+
+
+def test_fix_attaches_to_fail_not_to_earlier_warn() -> None:
+    """FIX는 결과 배열 순서가 아니라 심각도를 보고 붙는다 (#69).
+
+    기본 체크 WARN(cpu_multiplier_low) + 모델 체크 FAIL(status_oom)에서, 예전에는
+    처음 만난 non-PASS인 WARN에 FIX가 붙었다 — 사용자는 화면의 OOM FAIL을 보면서
+    "CPU 대비 연산 속도 2배 미만" 안내를 받고, 정작 batch_size 축소 안내는
+    어디에도 나오지 않았다.
+    """
+    basic_warn = {
+        "status": "ok",
+        "device": "cuda",
+        "verdict": "WARN",
+        "reasons": ["cpu_multiplier_low"],
+    }
+    model_fail = {
+        "status": "oom",
+        "device": "cuda",
+        "verdict": "FAIL",
+        "reasons": ["status_oom"],
+    }
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", return_value={"status": "ok"}),
+        patch("preflight.cli.judge_result", side_effect=[basic_warn, model_fail]),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        result = runner.invoke(
+            app, ["check", "--model", "dummy/model", "--batch-size", "2", "--seq-len", "2048"]
+        )
+
+    assert result.exit_code == 1
+    results = mock_render.call_args[0][0]
+    assert "fix" not in results[0]
+    assert results[1]["fix"]["cause"] == "oom"
+    assert "batch_size" in results[1]["fix"]["message"]
+
+
+def test_select_fix_target_prefers_first_fail() -> None:
+    """FAIL이 여럿이면 그중 첫 번째에 붙는다 — 현재 동작 유지 (#69).
+
+    지금 파이프라인에서는 기본 체크가 FAIL이면 모델 체크가 fail-fast로 생략돼
+    FAIL이 둘 나올 수 없으므로, 규칙 자체를 함수 단위로 확인한다.
+    """
+    first = {"status": "import_crash", "verdict": "FAIL", "reasons": ["status_import_crash"]}
+    second = {"status": "oom", "verdict": "FAIL", "reasons": ["status_oom"]}
+    warn = {"status": "ok", "verdict": "WARN", "reasons": ["cpu_multiplier_low"]}
+
+    results = [warn, first, second]
+    target = _select_fix_target(results)
+
+    assert target is first
+    assert first["fix"]["cause"] == "import_crash_general"
+    assert "fix" not in warn
+    assert "fix" not in second

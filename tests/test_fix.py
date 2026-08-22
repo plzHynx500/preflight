@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,8 @@ from typer.testing import CliRunner
 from preflight.cli import app
 from preflight.fix.causes import classify_cause
 from preflight.fix.executor import FixExecutionError, apply_fix, suggest_fix
+
+BNB_REINSTALL_ARGS = ["-m", "pip", "install", "bitsandbytes", "--upgrade", "--force-reinstall"]
 
 
 def test_suggest_fix_none_when_pass() -> None:
@@ -34,7 +37,7 @@ def test_classify_and_suggest_bnb_not_compiled() -> None:
     fix1 = suggest_fix(res1)
     assert fix1 is not None
     assert fix1["cause"] == "bnb_not_compiled_with_cuda"
-    assert fix1["fix_command"] == "pip install bitsandbytes --upgrade --force-reinstall"
+    assert fix1["fix_argv"] == [sys.executable, *BNB_REINSTALL_ARGS]
 
     # case 2: 4bit cpu fallback — canary 자식이 채워 보낸 env로 판별한다 (#19)
     res2 = {
@@ -49,7 +52,38 @@ def test_classify_and_suggest_bnb_not_compiled() -> None:
     fix2 = suggest_fix(res2)
     assert fix2 is not None
     assert fix2["cause"] == "bnb_not_compiled_with_cuda"
-    assert fix2["fix_command"] == "pip install bitsandbytes --upgrade --force-reinstall"
+    assert fix2["fix_argv"] == [sys.executable, *BNB_REINSTALL_ARGS]
+
+
+def test_suggest_fix_targets_the_running_python(monkeypatch) -> None:
+    """수정은 **지금 preflight를 돌리고 있는 파이썬**에 한다 (#52).
+
+    PATH에서 찾은 `pip`을 쓰면 venv를 활성화하지 않았거나 pipx/전역 설치로
+    쓰는 사람에게 "진단은 A 환경, 수정은 B 환경"이 되고, 재확인이 계속 실패해도
+    사용자는 이유를 알 수 없다.
+    """
+    monkeypatch.setattr(sys, "executable", r"C:\Program Files\Py 3.11\python.exe")
+
+    fix = suggest_fix(
+        {
+            "status": "import_crash",
+            "verdict": "FAIL",
+            "reasons": ["status_import_crash"],
+            "error_log": "libbitsandbytes_cpu.so CUDA Setup failed",
+        }
+    )
+
+    assert fix is not None
+    assert fix["fix_argv"] == [r"C:\Program Files\Py 3.11\python.exe", *BNB_REINSTALL_ARGS]
+    # 화면에 찍히는 문자열도 그대로 복사해 쓸 수 있어야 한다 — 공백 있는 경로는
+    # 큰따옴표로 감싼다(cmd·PowerShell·bash 모두에서 통하는 유일한 인용).
+    assert fix["fix_command"] == (
+        r'"C:\Program Files\Py 3.11\python.exe"'
+        " -m pip install bitsandbytes --upgrade --force-reinstall"
+    )
+    # 짧게 보이려고 "python -m pip"으로 줄이지 않는다 — 복사해 붙이는 순간
+    # 다시 "지금 활성화된 파이썬"으로 돌아가 같은 버그가 재현된다.
+    assert not fix["fix_command"].startswith("pip ")
 
 
 def test_classify_and_suggest_import_general() -> None:
@@ -206,12 +240,32 @@ def test_priority_fail_over_warn() -> None:
 
 def test_apply_fix_none_or_empty_command() -> None:
     with patch("subprocess.run") as mock_run:
-        apply_fix({"fix_command": None})
-        apply_fix({"fix_command": ""})
+        apply_fix({"fix_command": None, "fix_argv": None})
+        apply_fix({"fix_command": "", "fix_argv": None})
+        apply_fix({})
         mock_run.assert_not_called()
 
 
-def test_apply_fix_executes_command_successfully() -> None:
+def test_apply_fix_executes_argv_without_reparsing_the_display_string() -> None:
+    """실행은 `fix_argv`로 한다 — 표시용 문자열을 다시 파싱하지 않는다 (#52).
+
+    Windows의 `C:\\Program Files\\...` 경로는 문자열로 조립했다가 `shlex.split`으로
+    되돌리면 인용이 깨진다. 조립하지 않으면 되돌릴 일도 없다.
+    """
+    argv = [r"C:\Program Files\Py 3.11\python.exe", *BNB_REINSTALL_ARGS]
+
+    with patch("subprocess.run") as mock_run:
+        apply_fix({"fix_argv": argv, "fix_command": "표시용 문자열은 무시된다"})
+        mock_run.assert_called_once_with(
+            argv,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+
+def test_apply_fix_falls_back_to_command_string() -> None:
+    """`fix_argv`가 없는 예전 형태의 fix dict도 그대로 실행된다."""
     with patch("subprocess.run") as mock_run:
         apply_fix({"fix_command": "pip install bitsandbytes --upgrade"})
         mock_run.assert_called_once_with(
@@ -293,7 +347,7 @@ def test_cli_check_with_yes_executes_fix() -> None:
         mock_apply_fix.assert_called_once()
         fix_arg = mock_apply_fix.call_args[0][0]
         assert fix_arg["cause"] == "bnb_not_compiled_with_cuda"
-        assert fix_arg["fix_command"] == "pip install bitsandbytes --upgrade --force-reinstall"
+        assert fix_arg["fix_argv"] == [sys.executable, *BNB_REINSTALL_ARGS]
 
 
 def test_cli_check_with_yes_no_fix_when_pass() -> None:

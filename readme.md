@@ -55,12 +55,14 @@ $ preflight check
 ✖ bitsandbytes 4bit 레이어      device=cpu 감지 → 조용한 CPU 폴백
 ✖ 실행 시간 1.1배                CPU 대비 유의미한 가속 없음 (2배 미만)
 
-FIX(제안): pip install bitsandbytes --upgrade --force-reinstall
+FIX(제안): /home/user/venv/bin/python -m pip install bitsandbytes --upgrade --force-reinstall
 ```
+
+제안하는 명령은 PATH에서 찾은 `pip`이 아니라 **지금 preflight를 실행 중인 파이썬**을 가리킵니다 — venv를 활성화하지 않았거나 pipx·전역 설치로 쓰는 환경에서 진단한 곳과 다른 환경에 설치되는 것을 막기 위해서입니다.
 
 ### CI/CD 연동 및 종료 코드 (Exit Code)
 
-Preflight는 CI/CD 파이프라인이나 자동화 스크립트에서 프로그래밍 방식으로 결과를 판단할 수 있도록 규격화된 종료 코드를 반환합니다. `--yes` 옵션으로 수정 및 재확인 수행 시에는 재확인의 최종 판정 결과를 기준으로 반환합니다.
+Preflight는 CI/CD 파이프라인이나 자동화 스크립트에서 프로그래밍 방식으로 결과를 판단할 수 있도록 규격화된 종료 코드를 반환합니다. `--yes` 옵션으로 수정 및 재확인을 수행하면, 재확인 결과로 교체된 전체 진단 결과를 다시 집계한 값을 기준으로 반환합니다(재확인하지 않은 항목의 판정도 그대로 반영됩니다). 실행할 수정 명령이 없었거나 그 명령이 실패해 재확인을 하지 못한 경우에는 1차 판정이 기준입니다.
 
 | 종료 코드 | 판정 | 설명 |
 |---|---|---|

@@ -233,7 +233,7 @@ conda, poetry, venv, Docker 등 가상환경 관리 방식이 사용자마다 �
 
 | 탐지 항목 | 판정 | FIX 방향(안) |
 |---|---|---|
-| Import 크래시 | FAIL | 예외 타입별 재설치 명령. 예: bitsandbytes CUDA 미빌드 → `pip install bitsandbytes --upgrade --force-reinstall` |
+| Import 크래시 | FAIL | 예외 타입별 재설치 명령. 예: bitsandbytes CUDA 미빌드 → `<sys.executable> -m pip install bitsandbytes --upgrade --force-reinstall` (PATH의 `pip`을 쓰면 진단한 환경과 다른 곳에 설치될 수 있다 — [cli.md](contracts/cli.md) 참고) |
 | OOM(`--model` 목표 크기 실행 시) | FAIL | batch_size 축소 또는 quantization 적용 안내 |
 | 4bit 레이어 device=cpu 감지 | FAIL | `compiled_with_cuda` False면 재설치 FIX, True인데도 cpu면 다른 원인으로 분기 안내 |
 | CPU 대비 배수 2배 미만 | WARN | 원인 특정 어려운 회색지대 — 성능 저하 가능성 안내 수준으로 예상 |

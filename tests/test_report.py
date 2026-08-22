@@ -175,7 +175,7 @@ def test_render_report_json_mode_shape(capsys) -> None:
     out = capsys.readouterr().out
     payload = json.loads(out)
 
-    assert set(payload.keys()) == {"results", "summary", "exit_code_hint"}
+    assert set(payload.keys()) == {"results", "summary", "notices", "exit_code_hint"}
     assert payload["summary"]["fail"] == 1
     assert payload["results"][0]["verdict"] == "FAIL"
     # results는 병합된 추가 키(fix, expected_memory_delta_mb)까지 그대로 통과된다.
@@ -678,3 +678,51 @@ def test_render_report_short_error_log_has_no_truncation_note(capsys) -> None:
 
     out = capsys.readouterr().out
     assert "일부만" not in out
+
+
+def test_render_report_reverified_block_gets_label(capsys) -> None:
+    """재확인 블록은 결과가 하나여도 "(재확인)" 표제를 붙인다 (#57).
+
+    표시가 없으면 수정 전후 화면이 똑같아, 사용자는 화면의 ✔이 수정 덕분인지
+    원래 그랬는지 알 수 없다.
+    """
+    result = {**judge_result(_OK_RAW), "reverified": True}
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "기본 체크 (재확인)" in out
+
+
+def test_render_report_notices_shown_in_text(capsys) -> None:
+    """--yes가 무엇을 했는지(또는 왜 아무것도 안 했는지) 화면에 나온다 (#53·#57)."""
+    render_report(
+        [judge_result(_OK_RAW)],
+        notices=["자동 수정 실행: python -m pip install bitsandbytes"],
+    )
+
+    out = capsys.readouterr().out
+    assert "자동 수정 실행: python -m pip install bitsandbytes" in out
+
+
+def test_render_report_notices_included_in_json(capsys) -> None:
+    """자동화 쪽도 --yes가 실제로 뭘 했는지 알아야 한다."""
+    render_report([judge_result(_OK_RAW)], json_output=True, notices=["자동 수정 실패: pip"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["notices"] == ["자동 수정 실패: pip"]
+
+
+def test_render_report_notices_default_to_empty_list_in_json(capsys) -> None:
+    render_report([judge_result(_OK_RAW)], json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["notices"] == []
+
+
+def test_render_report_notice_with_brackets_is_escaped(capsys) -> None:
+    """notice에 대괄호가 들어가도 rich 마크업으로 먹히지 않는다 (#67과 같은 함정)."""
+    render_report([judge_result(_OK_RAW)], notices=["자동 수정 실패: pip install foo[all]"])
+
+    out = capsys.readouterr().out
+    assert "foo[all]" in out
