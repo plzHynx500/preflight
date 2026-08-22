@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -240,3 +242,29 @@ def test_ensure_utf8_streams_survives_cp949_output(monkeypatch) -> None:
     output = buffer.getvalue().decode("utf-8")
     assert "✖" in output
     assert "—" in output
+
+
+def test_python_dash_m_preflight_runs() -> None:
+    """`python -m preflight`가 콘솔 스크립트와 같이 동작한다 (#64).
+
+    Windows에서 venv를 활성화하지 않았거나 `pip install --user`로 설치하면
+    `Scripts/`가 PATH에 없어 `preflight` 명령을 못 찾는다. 그때의 표준 폴백이
+    이 호출인데, `__main__.py`가 없으면 "cannot be directly executed"로 막혔다.
+
+    콘솔 스크립트(`preflight`)는 설치된 환경에서만 존재하므로, 어디서나 도는
+    모듈 실행 경로만 검증한다.
+    """
+    result = subprocess.run(
+        # 최상위 --help가 아니라 서브커맨드를 쓴다 — 최상위 --help는 파이프로 보낼 때
+        # 별개 버그로 죽는다(#89). 여기서 확인할 것은 모듈 해석이 되는가다.
+        [sys.executable, "-m", "preflight", "check", "--help"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--model" in result.stdout
+    assert "cannot be directly executed" not in result.stderr
