@@ -31,6 +31,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # #76 — torch는 의도적으로 하드 의존성이 아니라(pyproject.toml, docs/architecture.md
+      # §2), tests/test_model.py가 맨 위에서 `pytest.importorskip("torch")`로 스킵돼
+      # 지금까지 CI에서 한 번도 실행되지 않았다. build_dummy_model의 QLoRA 골격·LoRA
+      # 훅·fp32 폴백 로직이 CI에서 검증되도록 한 job(3.12)에만 CPU 전용 torch를 설치한다.
+      # transformers/bitsandbytes는 test_model.py가 monkeypatch로 흉내 내므로 필요 없다.
+      - name: Install CPU torch (canary model tests)
+        if: matrix.python-version == '3.12'
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
       - name: Format check
         run: ruff format --check .
 
