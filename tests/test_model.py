@@ -271,6 +271,30 @@ def test_build_dummy_model_falls_back_to_fp32_when_bitsandbytes_missing(
     assert quant_backend == "nn-linear-fallback"
 
 
+def test_build_dummy_model_fallback_moves_model_to_requested_device(
+    fake_transformers, monkeypatch
+) -> None:
+    """폴백 모델도 요청받은 device로 올라간다 (#66).
+
+    이걸 안 하면 폴백 모델만 CPU에 남아, 같은 device로 만들어진 입력(cuda)과
+    어긋나 forward가 `RuntimeError: Expected all tensors to be on the same
+    device`로 죽는다 — "bitsandbytes가 없어도 진단은 계속한다"는 폴백의 목적이
+    발동 순간 무너진다.
+
+    `device="meta"`로 검증한다 — GPU 없는 CI에서도 "요청 device로 옮겼는가"를
+    실제 파라미터 device로 확인할 수 있고, 실제 메모리는 할당하지 않는다.
+    """
+    _remove_module(monkeypatch, "bitsandbytes")
+
+    from preflight.canary.model import build_dummy_model
+
+    model, _config, quant_backend = build_dummy_model("some-org/some-model", device="meta")
+
+    assert quant_backend == "nn-linear-fallback"
+    param_devices = {param.device.type for param in model.parameters()}
+    assert param_devices == {"meta"}, f"폴백 모델이 요청 device로 안 올라갔다: {param_devices}"
+
+
 def test_build_dummy_input_uses_vocab_size_from_config() -> None:
     from preflight.canary.model import build_dummy_input
 

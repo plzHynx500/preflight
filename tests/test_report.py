@@ -277,6 +277,34 @@ def test_render_report_model_mode_shows_vram_not_quant_line(capsys) -> None:
     assert "bitsandbytes" not in out
 
 
+def test_render_report_model_mode_shows_quant_fallback_line(capsys) -> None:
+    """--model 모드에서도 4bit 폴백 사실은 화면에 나온다 (#66).
+
+    폴백이면 VRAM 실측값이 QLoRA가 아니라 fp32 전체 모델 기준이라 훨씬 크게
+    나온다 — 그 전제를 안 알려주면 사용자는 "이 GPU로는 무리"라는 정반대
+    결론을 낸다. 판정 줄이 아니므로 문제 개수에는 들어가지 않는다.
+    """
+    result = judge_result({**_MODEL_MODE_RAW, "quant_backend": "nn-linear-fallback"})
+    assert result["verdict"] == "PASS"
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "4bit 레이어 폴백" in out
+    assert "fp32 전체 모델로 실측됨" in out
+    assert "VRAM 실측" in out
+    assert "문제 없음" in out
+
+
+def test_render_report_model_mode_has_no_fallback_line_when_4bit_worked(capsys) -> None:
+    """정상 4bit 실행에는 폴백 줄이 없다 — 폴백일 때만 나오는 줄이다."""
+    result = judge_result(_MODEL_MODE_RAW)
+
+    render_report([result])
+
+    assert "4bit 레이어 폴백" not in capsys.readouterr().out
+
+
 def test_render_report_model_mode_target_size_shown_when_available(capsys) -> None:
     raw = {**_MODEL_MODE_RAW, "batch_size": 2, "seq_len": 2048}
     result = judge_result(raw)
@@ -375,6 +403,26 @@ def test_render_report_two_results_get_group_labels(capsys) -> None:
     assert basic_idx < model_idx
     assert "VRAM 실측" in out
     assert "bitsandbytes 4bit 레이어" in out
+
+
+def test_render_report_group_label_brackets_survive_rich_markup(capsys) -> None:
+    """model_name의 대괄호는 rich 마크업으로 먹히지 않고 원문 그대로 표제에 남는다(#67)."""
+    model_result = judge_result({**_MODEL_MODE_RAW, "model_name": r"C:\models\ckpt[v2]"})
+
+    render_report([judge_result(_OK_RAW), model_result])
+
+    out = capsys.readouterr().out
+    assert r"모델 체크: C:\models\ckpt[v2]" in out
+
+
+def test_render_report_group_label_closing_tag_does_not_crash(capsys) -> None:
+    """model_name에 "[/bold]" 같은 닫는 태그 꼴이 들어가도 MarkupError 없이 끝까지 렌더된다(#67)."""
+    model_result = judge_result({**_MODEL_MODE_RAW, "model_name": "weird[/bold]name"})
+
+    render_report([judge_result(_OK_RAW), model_result])  # MarkupError가 나면 여기서 터진다
+
+    out = capsys.readouterr().out
+    assert "weird[/bold]name" in out
 
 
 def test_render_report_basic_check_without_gpu_is_not_model_mode(capsys) -> None:
