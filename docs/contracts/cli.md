@@ -10,6 +10,7 @@ Preflight 명령어의 입출력 형식. CLI를 감싸는 도구(CI 스크립트
 | `preflight check --model <name> --batch-size <n> --seq-len <n>` | 목표 모델의 실제 config로 canary를 구성해 목표 크기 그대로 실행, VRAM 실측 (MVP) |
 | `preflight check --yes` | 제시된 수정 명령어를 실행하고, 직후 자동으로 재확인까지 수행 |
 | `preflight check --json` | 사람이 아닌 다른 도구가 읽을 JSON 형식으로 결과 출력 |
+| `preflight --version` | 설치된 preflight 버전(`preflight.__version__`)을 출력하고 종료 |
 
 `--model` 지정 시에만 의미를 갖는 학습 설정 세부 옵션(LoRA·양자화·옵티마이저 등)은 MVP에 없다.
 

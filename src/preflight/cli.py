@@ -8,6 +8,7 @@ from typing import Optional
 
 import typer
 
+from preflight import __version__
 from preflight.canary.engine import run_canary_check
 from preflight.canary.judge import judge_result
 from preflight.fix.executor import FixExecutionError, apply_fix, suggest_fix
@@ -43,8 +44,22 @@ def ensure_utf8_streams() -> None:
 ensure_utf8_streams()
 
 
+def _version_callback(show_version: bool) -> None:
+    if show_version:
+        typer.echo(f"preflight {__version__}")
+        raise typer.Exit()
+
+
 @app.callback()
-def callback() -> None:
+def callback(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="버전 정보를 출력하고 종료",
+    ),
+) -> None:
     """Preflight CLI."""
 
 
@@ -128,7 +143,8 @@ def check(
     yes: bool = typer.Option(False, "--yes", help="제시된 수정 명령어를 실행하고 재확인까지 수행"),
     json_output: bool = typer.Option(False, "--json", help="JSON 형식으로 결과 출력"),
 ) -> None:
-    """docs/contracts/canary-api.md §5.4 전체 흐름을 따른다."""
+    """GPU/CUDA 환경이 실제로 파인튜닝 가능한지 canary 연산으로 진단한다."""
+    # 상세 흐름: docs/contracts/canary-api.md §5.4
     start_time = time.perf_counter()
 
     state = query_gpu_state()

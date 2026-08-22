@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+from preflight import __version__
 from preflight.cli import _select_fix_target, app, ensure_utf8_streams, get_exit_code
 from preflight.report import render_report
 
@@ -30,6 +31,27 @@ def _strip_ansi(text: str) -> str:
 def test_check_command_exists() -> None:
     result = runner.invoke(app, ["check", "--help"])
     assert result.exit_code == 0
+
+
+def test_version_flag_prints_version_and_exits() -> None:
+    result = runner.invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert __version__ in result.output
+
+
+def test_help_does_not_leak_internal_docs_path() -> None:
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "docs/contracts" not in result.output
+
+
+def test_check_help_does_not_leak_internal_docs_path() -> None:
+    result = runner.invoke(app, ["check", "--help"])
+
+    assert result.exit_code == 0
+    assert "docs/contracts" not in result.output
 
 
 def test_get_exit_code() -> None:
