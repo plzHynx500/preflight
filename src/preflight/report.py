@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from rich.console import Console
+from rich.markup import escape
 
 # reason 코드(judge.py의 실제 문자열, 원문 그대로) -> 사람이 읽는 한국어 메시지.
 # causes.py의 cause 코드(예: "bnb_not_compiled_with_cuda")와는 별개의 키 공간이다 —
@@ -26,6 +27,7 @@ _REASON_MESSAGES: dict[str, str] = {
 _INFO_ONLY_REASONS = {"quant_fallback"}
 
 _ERROR_LOG_MAX_CHARS = 200
+_TRUNCATION_NOTE = "(로그 일부만 표시 — 전문은 preflight check --json)"
 
 
 class _Line:
@@ -86,10 +88,62 @@ def _status_line(result: dict) -> _Line:
     message = _REASON_MESSAGES.get(reason_key, f"status={status} 감지 → 정상 실행 불가")
     detail = result.get("error_log")
     if detail:
-        detail = str(detail)
-        if len(detail) > _ERROR_LOG_MAX_CHARS:
-            detail = detail[:_ERROR_LOG_MAX_CHARS] + "…"
+        detail = _truncate_error_log(str(detail))
     return _Line("✖", "red", f"Canary 연산 실행    {message}", detail=detail, is_problem=True)
+
+
+def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str:
+    """긴 error_log를 "첫 프레임 + … + 꼬리"로 줄인다 — 꼬리(실제 예외 줄)는 항상 남긴다.
+
+    예전에는 앞에서 200자만 남기고 잘랐는데, 파이썬 트레이스백은 진짜 원인
+    (`ModuleNotFoundError: No module named 'torch'` 같은 예외 타입·메시지)이
+    **마지막 줄**에 오므로 항상 그 줄이 잘려나가고 파일 경로만 남았다. 안내
+    문구는 "에러 로그 확인 필요"라고 하는데 정작 그 로그가 잘려 있던 셈이다(#43).
+
+    단순 tail로만 가면 "무엇을 하다가 죽었는지"(첫 프레임)를 잃으므로 둘 다
+    남긴다: 첫 프레임 한 줄 → "…" → 예산 안에서 뒤쪽 줄들. 트레이스백 헤더
+    ("Traceback (most recent call last):")는 정보가 없어 첫 프레임으로 건너뛴다.
+
+    개행 없는 한 줄 로그(engine이 만드는 f"{type(exc).__name__}: {exc}" 등)는 예외
+    이름이 맨 앞에 오므로 앞뒤를 반씩 남긴다 — 첫 프레임/마지막 줄 논리를 그대로
+    태우면 같은 줄이 head와 tail에 중복돼 출력이 입력보다 길어진다(PR #48 리뷰).
+
+    줄였을 때는 마지막에 안내 한 줄을 덧붙인다. 가장 짧은 실패 로그(torch 미설치)도
+    230자라 사실상 모든 에러가 잘리는데, 잘렸다는 말이 없으면 사용자는 그게
+    전부라고 믿는다. 전문은 --json에 그대로 있다.
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+
+    lines = text.splitlines()
+    if len(lines) == 1:
+        half = (max_chars - 1) // 2
+        return f"{text[:half]}…{text[-half:]}\n{_TRUNCATION_NOTE}"
+
+    head = lines[0]
+    if head.startswith("Traceback (most recent call last)") and len(lines) > 1:
+        head = lines[1]
+    head = head.strip()
+    head_budget = 80
+    if len(head) > head_budget:
+        head = head[: head_budget - 1] + "…"
+
+    tail_budget = max(max_chars - len(head) - 1, 40)
+    last_line = lines[-1].strip()
+    if len(last_line) >= tail_budget:
+        # 마지막 줄 자체가 예산보다 길면 그 줄만이라도 통째로 — 절대 앞을 자르지 않는다.
+        tail = last_line
+    else:
+        start = len(text) - tail_budget
+        # 줄 중간에서 시작하면 그 조각은 버리고 다음 줄부터 — 마지막 줄은 항상 남는다.
+        if text[start - 1] != "\n":
+            newline = text.find("\n", start)
+            if newline != -1:
+                start = newline + 1
+        tail = text[start:]
+
+    return f"{head}\n…\n{tail}\n{_TRUNCATION_NOTE}"
 
 
 def _timing_line(result: dict) -> _Line:
@@ -111,6 +165,20 @@ def _timing_line(result: dict) -> _Line:
     )
 
 
+def _format_memory_delta(memory_delta_mb: float) -> str:
+    """canary 실측값을 읽기 좋은 단위로 — 1GB 미만은 MB, 이상은 GB.
+
+    작은 모델(tiny-random-gpt2 등)은 18MB 정도만 옮기는데 `:.1f`GB로 찍으면
+    `0.0GB`가 되어 **측정에 실패한 것처럼** 읽힌다. "실제로 재봤다"가 핵심
+    가치인 도구가 정확히 그 지점에서 0.0을 보여주면 신뢰를 잃는다(#45).
+    """
+    if memory_delta_mb < 1:
+        return "<1MB"
+    if memory_delta_mb < 1024:
+        return f"{memory_delta_mb:.0f}MB"
+    return f"{memory_delta_mb / 1024:.1f}GB"
+
+
 def _vram_line(result: dict) -> _Line:
     """canary가 실제로 옮긴 메모리량과, judge_result가 WARN 판정에 쓴 것과
     "같은" 가용/총 VRAM 숫자를 함께 보여준다.
@@ -127,17 +195,16 @@ def _vram_line(result: dict) -> _Line:
     if memory_delta_mb is None:
         return _Line("✔", "green", "VRAM 실측    측정값 없음")
 
-    memory_delta_gb = memory_delta_mb / 1024
+    measured = _format_memory_delta(memory_delta_mb)
     env = result.get("env") or {}
     free_mb = env.get("gpu_free_mb")
     total_mb = env.get("gpu_total_mb")
 
     if free_mb is not None and total_mb is not None:
-        detail = (
-            f"{memory_delta_gb:.1f}GB / {free_mb / 1024:.1f}GB 가용 (총 {total_mb / 1024:.0f}GB)"
-        )
+        # 가용·총은 항상 GB로 충분히 크므로 단위를 바꾸지 않는다(#45 범위 제외).
+        detail = f"{measured} / {free_mb / 1024:.1f}GB 가용 (총 {total_mb / 1024:.0f}GB)"
     else:
-        detail = f"{memory_delta_gb:.1f}GB 사용"
+        detail = f"{measured} 사용"
 
     return _Line("✔", "green", f"VRAM 실측    {detail}")
 
@@ -321,7 +388,9 @@ def _render_text(results: list[dict], elapsed_seconds: float | None) -> None:
             else:
                 console.print(f"[{line.style}]{line.symbol}[/{line.style}] {line.text}")
             if line.detail:
-                console.print(f"    [dim]{line.detail}[/dim]")
+                # error_log는 자유 텍스트라 "[stderr]" 같은 대괄호가 rich 마크업으로
+                # 먹혀 사라지거나(실측), "[/x]" 꼴이면 MarkupError로 죽는다 — escape한다.
+                console.print(f"    [dim]{escape(line.detail)}[/dim]")
 
     # FIX 블록은 개별 체크 블록 사이가 아니라 **전부 그린 뒤 한 번에** 나온다
     # (cli.md "출력 예시"). 체크 블록 사이에 끼면 "무엇이 문제인가"를 읽는 흐름이
