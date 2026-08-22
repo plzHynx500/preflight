@@ -239,7 +239,7 @@ AGENTS.md만으로는 부족하다. 긴 구현·디버깅이 이어지면 마무
 | `AGENTS.md` | 팀 규칙과 안전 경계 | 있음 (이 문서) |
 | `.agents/skills/` | 작업별 순서와 체크리스트 | 있음 (위 참고) |
 | `.agents/hooks.json` + `scripts/verify-before-pr.sh`(`.ps1`) | 포맷·린트·테스트·민감 파일 검사의 기계적 강제 | 있음 — 단 `.agents/hooks.json`은 Antigravity CLI 전용 형식이라 Claude Code에서는 아무 효과가 없다(Claude Code는 `.claude/settings.json`에 별도 hooks 스키마를 쓰며, 이 repo엔 아직 없다). Claude Code 세션에서는 `implement-issue` 스킬의 검증 단계나 `scripts/verify-before-pr.*`을 직접 호출하는 것으로 대체한다 |
-| `.github/workflows/ci.yml` + branch protection | 병합 전 최종 안전망 | CI 워크플로만 있음. branch protection은 아직 켜지 않았다(아래 참고) |
+| `.github/workflows/ci.yml` + branch protection | 병합 전 최종 안전망 | CI 워크플로 있음. branch protection도 이미 켜져 있다 — main에 `verify (3.9)`/`verify (3.12)`가 required status check로 걸려 있다(아래 참고) |
 
 `verify-before-pr`는 포맷 검사 → 린트 → 테스트 → 민감 파일(`.env`, credentials, secret) 검사 순으로 실행한다. **현재는 pytest 단계만 예외적으로 비차단이다** — `tests/`에 구현 전 골격 스텁(`raise NotImplementedError`)이 남아 있어, 지금 무조건 차단으로 두면 문서만 고치는 PR까지 100% 막혀 검증 자체가 무력화되기 때문이다(포맷·린트·민감 파일 검사는 지금도 예외 없이 차단). `--strict-tests`(`-StrictTests`, 또는 `PREFLIGHT_STRICT_TESTS=1`)로 즉시 강제할 수 있고, 첫 구현 Issue가 머지되어 스텁이 사라지면 이 예외를 없애고 기본값을 strict로 되돌린다. `.github/workflows/ci.yml`의 Test 스텝도 같은 이유로 `continue-on-error: true`다 — 포맷·린트는 CI에서도 지금부터 실효 있는 차단 조건이다.
 
@@ -247,7 +247,7 @@ Hook은 편의 장치이지 CI를 대체하는 최종 안전망이 아니며, �
 
 ### 아직 이 repo에 없는 것 (사람이 해야 함)
 
-- **`main` branch protection** — "PR 필수", "CI 통과 필수" 등. 켜는 순간 3명 전원이 direct push 대신 PR을 거쳐야 하므로, 파일 생성과 달리 팀 워크플로 자체를 바꾸는 결정이라 자동으로 켜지 않았다. 켜더라도 위 pytest 예외 때문에 지금은 포맷·린트만 실질적인 게이트다.
+- **`main` branch protection**은 이미 켜져 있다(required status check: `verify (3.9)`, `verify (3.12)`) — 이 항목은 더 이상 "없는 것"이 아니다. 단, 위 pytest 예외 때문에 지금은 포맷·린트만 실질적인 게이트다. CI 매트릭스에 job을 추가할 때 기존 job 이름(`verify (버전)`)이 바뀌면 required check가 깨지므로 주의(#49에서 `verify-windows`를 별도 job으로 분리해 회피한 이유). 새 job을 required로 승격할지는 여전히 사람이 branch protection 설정에서 결정해야 한다.
 - **GitHub Project 보드**("Preflight MVP")와 Auto-add 워크플로우 — 생성 안 함.
 - **`gh auth refresh -s project`** — 현재 `gh` 토큰에 `project` 스코프가 없어 Project 관련 CLI 조작이 막혀 있다. 스코프 확장은 토큰 권한 변경이라 자동화 등급 D(사람만 실행)로 분류해 시도하지 않았다. `gh`는 이미 로그인돼 있다(Issue 생성 등에는 지금도 문제없이 쓸 수 있다) — Project 조작에만 추가 스코프가 필요하다.
 

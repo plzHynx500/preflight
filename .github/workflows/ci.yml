@@ -47,3 +47,35 @@ jobs:
       # 있다는 착각이므로, 3.9 수정과 함께 예외를 걷어낸다.
       - name: Test
         run: pytest
+
+  # #49 — 팀 전원과 상당수 사용자가 Windows인데 위 `verify` job은 ubuntu-latest뿐이라
+  # Windows 전용 회귀(예: #46의 time.monotonic 해상도 문제)를 CI가 못 잡았다.
+  # `verify` job의 matrix에 os를 얹지 않고 별도 job으로 분리한 이유: matrix에 os를
+  # 섞으면 GitHub가 생성하는 job 이름이 `verify (3.9)` → `verify (ubuntu-latest, 3.9)`로
+  # 바뀌어, 이미 켜져 있는 branch protection의 required status check(`verify (3.9)`,
+  # `verify (3.12)`)와 더 이상 매칭되지 않아 모든 PR이 막힌다. 이 job은 required로
+  # 자동 편입되지 않으므로 기존 흐름을 깨지 않는다 — required로 승격할지는 사람이
+  # branch protection 설정에서 별도로 정한다.
+  verify-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest
