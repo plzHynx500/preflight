@@ -204,7 +204,8 @@ $ preflight check --json
         "bnb_compiled_with_cuda": null,
         "bnb_cpu_4bit_supported": null,
         "gpu_free_mb": 9420.0,
-        "gpu_total_mb": 12282.0
+        "gpu_total_mb": 12282.0,
+        "gpu_driver_version": "560.94.03"
       },
       "fix": {
         "cause": "torch_cpu_only_build",

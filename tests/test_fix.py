@@ -218,6 +218,48 @@ def test_classify_cpu_only_torch_build_with_gpu_present() -> None:
     assert "torch" in fix["fix_command"]
     # --force-reinstall이 없으면 pip이 "이미 설치됨"으로 아무것도 하지 않는다.
     assert "--force-reinstall" in fix["fix_command"]
+    # env에 gpu_driver_version이 없으면 기존 기본값(cu124)으로 떨어진다.
+    assert "/whl/cu124" in fix["fix_command"]
+
+
+@pytest.mark.parametrize(
+    ("driver_version", "expected_tag"),
+    [
+        ("595.79", "cu130"),  # major 595 >= 580 → CUDA 13.0 GA 구간
+        ("580.65.06", "cu130"),  # 경계값 그대로
+        ("572.13", "cu126"),  # major 572 >= 560이지만 580 미만
+        ("560.76", "cu126"),  # 경계값 그대로 (Windows 12.6 최소)
+        ("551.61", "cu124"),  # major 551 < 560 → 매핑 밖, 기본값
+        ("560", "cu126"),  # 소수점 없이 major만 온 경우
+        ("", "cu124"),  # 빈 문자열
+        ("unknown", "cu124"),  # 숫자가 아닌 값
+    ],
+)
+def test_torch_cpu_only_build_picks_cuda_wheel_by_driver_major(
+    driver_version: str, expected_tag: str
+) -> None:
+    """torch 재설치 fix_command의 CUDA 휠 태그는 드라이버 major 브랜치 번호로 정해진다
+
+    (#82, ADR-0007). patch 단위는 보지 않는다 — Linux/Windows 최소 드라이버 표의
+    patch 값이 서로 달라 OS 판별 없이는 못 맞춘다.
+    """
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.13.0+cpu",
+            "torch_cuda_version": None,
+            "bnb_compiled_with_cuda": None,
+            "gpu_free_mb": 9595.8,
+            "gpu_total_mb": 12282.0,
+            "gpu_driver_version": driver_version,
+        }
+    )
+
+    assert classify_cause(res) == "torch_cpu_only_build"
+    fix = suggest_fix(res)
+    assert fix is not None
+    assert fix["fix_command"] is not None
+    assert f"/whl/{expected_tag}" in fix["fix_command"]
+    assert fix["fix_argv"][-1] == f"https://download.pytorch.org/whl/{expected_tag}"
 
 
 def test_classify_cpu_only_torch_build_without_nvidia_gpu() -> None:

@@ -71,7 +71,7 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 > **`env`는 여럿이 쌓아가는 칸이다 — 통째로 갈아끼우지 말 것.** 자식이 라이브러리 상태를 채운 뒤, 부모(`cli`)가 GPU 정보를 **얹는다**. `raw["env"] = {...}`로 대입하면 자식이 채운 값이 사라지고, **에러 없이 원인 분류만 조용히 실패**해 잡기 어렵다.
 >
 > ```python
-> raw["env"] = {**(raw.get("env") or {}), "gpu_free_mb": ..., "gpu_total_mb": ...}
+> raw["env"] = {**(raw.get("env") or {}), "gpu_free_mb": ..., "gpu_total_mb": ..., "gpu_driver_version": ...}
 > ```
 >
 > **`setdefault("env", {})`를 쓰면 안 된다.** `_normalize()`가 모든 필드를 항상 만들기 때문에 `env`는 **키가 있고 값만 `None`인 상태**가 되는데, `setdefault`는 키 존재 여부만 보므로 `None`을 그대로 돌려준다 → `None.update(...)`로 **부모 프로세스가 죽는다** — 하필 `import_crash`처럼 `env`가 비는 바로 그 상황에서, ADR-0002가 막으려던 것과 같은 종류로. 자식이 아예 안 돌아 부모가 결과를 직접 만드는 경로(기동 실패·타임아웃·결과 파일 없음)에서도 `env`는 `None`이므로, 병합 코드는 어떤 경우에도 `None`을 견뎌야 한다.
@@ -191,12 +191,21 @@ MVP 범위 밖이라 `device_index=0`(기본 GPU)만 본다.
 
 **`judge_result`로 넘기는 방법**: `run_canary_check()`의 7개 필드 반환 스키마 자체에는
 포함되지 않는다 — 호출한 쪽(cli.py, W12)이 `query_gpu_state()`를 별도로 불러
-`env`에 `gpu_free_mb`·`gpu_total_mb`(둘 다 MB) 두 값을 병합한 뒤 `judge_result()`에
-넘긴다. `gpu_total_mb`는 화면(report.py `_vram_line`)이 "X.XGB / Y.YGB 가용 (총
-Z.ZGB)"를 판정과 같은 숫자로 보여주는 데 쓰인다.
+`env`에 `gpu_free_mb`·`gpu_total_mb`(둘 다 MB)·`gpu_driver_version` 세 값을 병합한 뒤
+`judge_result()`에 넘긴다. `gpu_total_mb`는 화면(report.py `_vram_line`)이 "X.XGB / Y.YGB
+가용 (총 Z.ZGB)"를 판정과 같은 숫자로 보여주는 데 쓰인다. `gpu_driver_version`은 #82가
+`torch_cpu_only_build`의 `fix_command`가 받을 CUDA 휠 태그를 드라이버에 맞춰 고르려고
+얹은 값이다 — `suggest_fix`가 이 값을 읽어 태그를 정한다(major 브랜치 번호만 보는
+근사 매핑, [ADR-0007](../adr/0007-driver-version-based-torch-cuda-wheel-selection.md)
+참고). 이 값이 없거나 매핑에 없는 값이면 기존 기본값(`cu124`)으로 떨어진다.
 
 ```python
-raw["env"] = {**(raw.get("env") or {}), "gpu_free_mb": state["free_mb"], "gpu_total_mb": state["total_mb"]}
+raw["env"] = {
+    **(raw.get("env") or {}),
+    "gpu_free_mb": state["free_mb"],
+    "gpu_total_mb": state["total_mb"],
+    "gpu_driver_version": state["driver_version"],
+}
 ```
 
 **대입이 아니라 병합이다** — `raw["env"] = {...}`로 덮어쓰면 자식이 채운 값이 사라지고,
@@ -270,6 +279,8 @@ def suggest_fix(check_result: dict) -> dict | None:
 | `device=cpu` 폴백 | ① `torch_cuda_version`(CPU 전용 빌드인가) → ② `gpu_free_mb`(NVML이 GPU를 봤는가) → ③ `bnb_compiled_with_cuda`(①②를 못 읽었을 때만) | `torch_cpu_only_build` / `torch_cpu_only_build_no_gpu` / `no_nvidia_gpu_or_driver` / `cuda_device_not_visible` / `bnb_not_compiled_with_cuda` / `4bit_cpu_fallback_other` |
 
 `env`의 속성을 **못 읽은 것**과 그 속성이 **아닌 것**은 다르다 — `torch_version`이 `None`인데 `torch_cuda_version`도 `None`인 것은 "CPU 전용 빌드"가 아니라 "수집 실패"다. 수집 실패를 원인으로 읽으면 멀쩡한 환경에 재설치를 권하게 된다.
+
+**`torch_cpu_only_build`의 `fix_command`는 `env.gpu_driver_version`으로 CUDA 휠 태그를 고른다**(#82). 드라이버 버전 문자열의 major 브랜치 번호만 보는 근사 매핑이다 — 정확한 근거와 표가 어긋나는 조건은 [ADR-0007](../adr/0007-driver-version-based-torch-cuda-wheel-selection.md) 참고. 값이 없거나 매핑에 없으면 기존 기본값(`cu124`)으로 떨어진다.
 
 ## 전체 흐름
 

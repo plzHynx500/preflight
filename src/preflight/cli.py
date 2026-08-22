@@ -159,6 +159,7 @@ def check(
             **(raw_basic.get("env") or {}),
             "gpu_free_mb": state["free_mb"],
             "gpu_total_mb": state["total_mb"],
+            "gpu_driver_version": state["driver_version"],
         }
 
     basic_res = judge_result(raw_basic)
@@ -179,6 +180,7 @@ def check(
                     **(raw_model.get("env") or {}),
                     "gpu_free_mb": state["free_mb"],
                     "gpu_total_mb": state["total_mb"],
+                    "gpu_driver_version": state["driver_version"],
                 }
             # 이미 잰 값을 그대로 쓴다 — 재측정하면 canary 자신의 점유만큼 깎여 오염된다
             model_res = judge_result(raw_model)
@@ -266,6 +268,7 @@ def check(
                                 **(raw_model.get("env") or {}),
                                 "gpu_free_mb": model_state["free_mb"],
                                 "gpu_total_mb": model_state["total_mb"],
+                                "gpu_driver_version": model_state["driver_version"],
                             }
                         model_res = judge_result(raw_model)
                         results[skipped_index] = {
