@@ -77,12 +77,12 @@ def test_reverify_fail_verdict() -> None:
 
 
 def test_cli_yes_calls_reverify_after_fix_success() -> None:
-    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed"}
     fake_initial = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
     fake_reverified = {
         "status": "ok",
@@ -115,18 +115,18 @@ def test_cli_yes_calls_reverify_after_fix_success() -> None:
 
 
 def test_cli_yes_exits_nonzero_when_reverify_fails() -> None:
-    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed"}
     fake_initial = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
     fake_reverified = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed still",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed still",
     }
 
     with (
@@ -167,12 +167,12 @@ def test_cli_yes_not_called_when_initial_pass() -> None:
 
 
 def test_cli_yes_not_called_when_apply_fix_raises_error() -> None:
-    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed"}
     fake_initial = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
 
     err = FixExecutionError(
@@ -197,12 +197,12 @@ def test_cli_yes_not_called_when_apply_fix_raises_error() -> None:
 
 
 def test_cli_without_yes_does_not_call_reverify() -> None:
-    fake_raw = {"status": "import_crash", "error_log": "CUDA Setup failed"}
+    fake_raw = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed"}
     fake_initial = {
         "status": "import_crash",
         "verdict": "FAIL",
         "reasons": ["import_crash"],
-        "error_log": "CUDA Setup failed",
+        "error_log": "libbitsandbytes_cpu.so: CUDA Setup failed",
     }
 
     with (

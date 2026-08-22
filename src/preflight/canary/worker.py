@@ -485,11 +485,20 @@ def _base_layer_device(model):
 
     "4bit 레이어 device=cpu 감지"가 판정 항목이므로 모델 전체가 아니라 베이스
     레이어를 직접 본다.
+
+    얼린 파라미터가 하나도 없으면 **첫 파라미터의 device**로 물러선다. `--model`
+    경로의 fp32 폴백 모델(`AutoModelForCausalLM.from_config`)은 베이스를 얼리지도
+    LoRA를 붙이지도 않아 전부 `requires_grad=True`라, 원래대로면 None이 나갔다 —
+    화면에 `device=None`이 찍히고, 진짜 CPU에 있어도 judge의 `device=="cpu"` FAIL
+    규칙이 발동하지 못한다(#66). 파라미터가 아예 없는 모델만 None이다.
     """
+    first_device = None
     for param in model.parameters():
         if not param.requires_grad:
             return str(param.device).split(":")[0]
-    return None
+        if first_device is None:
+            first_device = str(param.device).split(":")[0]
+    return first_device
 
 
 if __name__ == "__main__":

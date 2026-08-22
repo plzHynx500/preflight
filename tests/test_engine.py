@@ -394,3 +394,55 @@ def test_rss_survives_process_death_without_exception(fake_module) -> None:
     assert result["status"] == "import_crash", result["error_log"]
     assert result["rss_peak_mb"] is not None
     assert result["rss_peak_mb"] > 0
+
+
+class _StubParam:
+    """`_base_layer_device`가 보는 것만 흉내 낸 파라미터 — torch 없이도 돈다.
+
+    이 dev 환경과 CI에는 torch가 없다(하드 의존성이 아니다 — docs/architecture.md
+    §2). `_base_layer_device`는 순수 파이썬 로직이라 진짜 텐서가 없어도 계약을
+    그대로 검증할 수 있다.
+    """
+
+    def __init__(self, device: str, requires_grad: bool) -> None:
+        self.device = device
+        self.requires_grad = requires_grad
+
+
+class _StubModel:
+    def __init__(self, *params: _StubParam) -> None:
+        self._params = params
+
+    def parameters(self):
+        return iter(self._params)
+
+
+def test_base_layer_device_prefers_the_frozen_base_layer() -> None:
+    """얼린 베이스가 있으면 그쪽 device를 본다 — "4bit 레이어 device=cpu 감지"가 판정 항목이다."""
+    model = _StubModel(
+        _StubParam("cuda:0", requires_grad=True),  # LoRA 어댑터
+        _StubParam("cpu", requires_grad=False),  # 조용히 CPU에 남은 베이스
+    )
+
+    assert worker._base_layer_device(model) == "cpu"
+
+
+def test_base_layer_device_falls_back_to_first_param_when_nothing_is_frozen() -> None:
+    """전부 학습 대상인 모델도 device를 돌려준다 — None이 아니다 (#66).
+
+    `--model` 경로의 fp32 폴백 모델(`AutoModelForCausalLM.from_config`)이 정확히
+    이 모양이다(베이스 미동결·LoRA 없음). 예전에는 None이 나가서 화면에
+    `device=None`이 찍히고, 진짜 CPU에 있어도 judge의 `device=="cpu"` FAIL 규칙이
+    발동하지 못했다.
+    """
+    model = _StubModel(
+        _StubParam("cuda:0", requires_grad=True),
+        _StubParam("cuda:0", requires_grad=True),
+    )
+
+    assert worker._base_layer_device(model) == "cuda"
+
+
+def test_base_layer_device_is_none_without_any_parameter() -> None:
+    """파라미터가 아예 없으면 여전히 None — 말할 수 있는 device가 없다."""
+    assert worker._base_layer_device(_StubModel()) is None

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import io
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from preflight.cli import app, get_exit_code
+from preflight.cli import app, ensure_utf8_streams, get_exit_code
+from preflight.report import render_report
 
 runner = CliRunner()
 
@@ -201,3 +203,40 @@ def test_cli_check_with_model_injects_gpu_state() -> None:
         assert model_call_arg["env"]["dummy"] == 2
         assert model_call_arg["env"]["gpu_free_mb"] == 10000
         assert model_call_arg["env"]["gpu_total_mb"] == 12000
+
+
+def test_ensure_utf8_streams_survives_cp949_output(monkeypatch) -> None:
+    """cp949로 리다이렉트된 stdout에도 ✖·— 같은 기호를 죽지 않고 찍는다 (#54).
+
+    Windows에서 `preflight check > file`처럼 stdout이 파이프/파일로 바뀌면
+    인코딩이 로케일(cp949 등)을 따라가 rich 콘솔의 ✔/✖/⚠/…/— 기호에서
+    UnicodeEncodeError로 죽었다. ensure_utf8_streams()가 stdout을 UTF-8로
+    재설정한 뒤에는 render_report()가 문제없이 완료돼야 한다.
+    """
+    buffer = io.BytesIO()
+    cp949_stdout = io.TextIOWrapper(buffer, encoding="cp949")
+    monkeypatch.setattr("sys.stdout", cp949_stdout)
+
+    ensure_utf8_streams()
+
+    results = [
+        {
+            "status": "import_crash",
+            "verdict": "FAIL",
+            "reasons": ["status_import_crash"],
+            "error_log": "CUDA error",
+        },
+        {
+            "model_name": "dummy/model",
+            "batch_size": 1,
+            "seq_len": 8,
+            "skipped": "환경 체크 실패",
+        },
+    ]
+
+    render_report(results, json_output=False, elapsed_seconds=1.0)
+    cp949_stdout.flush()
+
+    output = buffer.getvalue().decode("utf-8")
+    assert "✖" in output
+    assert "—" in output
