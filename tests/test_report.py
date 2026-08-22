@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from preflight.canary.judge import judge_result
+from preflight.cli import _aggregate_verdict, get_exit_code
 from preflight.report import _truncate_error_log, render_report
 
 _OK_RAW = {
@@ -216,6 +217,41 @@ def test_render_report_json_mode_all_pass_exit_hint_zero(capsys) -> None:
     assert payload["exit_code_hint"] == 0
     assert payload["summary"]["fail"] == 0
     assert payload["summary"]["warn"] == 0
+
+
+def test_render_report_json_mode_warn_only_exit_hint_two(capsys) -> None:
+    """FAIL 없이 WARN만 있으면 exit_code_hint는 2다 — cli.get_exit_code()와 같은 값(#70).
+
+    이진(0/1) 계산이었던 예전 버전은 여기서 1을 냈다 — 힌트를 믿고 분기하는 CI
+    스크립트가 WARN을 FAIL로 오인하는 원인이었다.
+    """
+    raw = {**_OK_RAW, "cpu_multiplier": 1.83}  # cpu_multiplier_low → WARN
+    result = judge_result(raw)
+    assert result["verdict"] == "WARN"
+
+    render_report([result], json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["exit_code_hint"] == 2
+    assert payload["exit_code_hint"] == get_exit_code(_aggregate_verdict([result]))
+
+
+def test_render_report_json_mode_fail_and_warn_exit_hint_one(capsys) -> None:
+    """FAIL과 WARN이 섞이면 FAIL이 우선이라 exit_code_hint는 1이다."""
+    warn_raw = {**_OK_RAW, "cpu_multiplier": 1.83}  # WARN
+    fail_raw = {**_OK_RAW, "device": "cpu"}  # quant_layer_device_cpu → FAIL
+    warn_result = judge_result(warn_raw)
+    fail_result = judge_result(fail_raw)
+    assert warn_result["verdict"] == "WARN"
+    assert fail_result["verdict"] == "FAIL"
+
+    render_report([warn_result, fail_result], json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["exit_code_hint"] == 1
+    assert payload["exit_code_hint"] == get_exit_code(
+        _aggregate_verdict([warn_result, fail_result])
+    )
 
 
 def test_render_report_elapsed_seconds_included_when_given_text(capsys) -> None:
@@ -591,6 +627,48 @@ def test_render_report_skipped_item_does_not_break_exit_code_hint(capsys) -> Non
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["exit_code_hint"] == 0
+
+
+def test_render_report_json_mode_warn_with_skipped_item_exit_hint_two(capsys) -> None:
+    """WARN 판정 + 생략 항목이 섞여도 exit_code_hint는 2 그대로다."""
+    warn_raw = {**_OK_RAW, "cpu_multiplier": 1.83}
+    warn_result = judge_result(warn_raw)
+    assert warn_result["verdict"] == "WARN"
+
+    render_report([warn_result, _SKIPPED_ITEM], json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["exit_code_hint"] == 2
+
+
+def test_render_report_exit_code_hint_always_matches_cli_get_exit_code(capsys) -> None:
+    """report.py의 exit_code_hint는 항상 cli.get_exit_code(cli._aggregate_verdict(...))와 같다(#70 완료 조건).
+
+    한쪽만 고치고 다른 쪽을 잊어버리는 회귀를 막기 위해, 두 모듈이 각자 계산한
+    값을 여러 조합에서 직접 비교한다.
+    """
+    pass_result = judge_result(_OK_RAW)
+    warn_result = judge_result({**_OK_RAW, "cpu_multiplier": 1.83})
+    fail_result = judge_result({**_OK_RAW, "device": "cpu"})
+
+    combinations = [
+        [pass_result],
+        [warn_result],
+        [fail_result],
+        [pass_result, warn_result],
+        [pass_result, fail_result],
+        [warn_result, fail_result],
+        [pass_result, warn_result, fail_result],
+        [pass_result, _SKIPPED_ITEM],
+        [warn_result, _SKIPPED_ITEM],
+        [fail_result, _SKIPPED_ITEM],
+    ]
+
+    for results in combinations:
+        render_report(results, json_output=True)
+        payload = json.loads(capsys.readouterr().out)
+        expected = get_exit_code(_aggregate_verdict(results))
+        assert payload["exit_code_hint"] == expected, results
 
 
 def test_render_report_fix_block_comes_after_all_check_blocks(capsys) -> None:
