@@ -70,6 +70,7 @@ def test_reverify_merges_gpu_state_into_env() -> None:
     assert res["env"]["gpu_free_mb"] == 512.0
     assert res["env"]["gpu_total_mb"] == 12288.0
     assert res["env"]["gpu_driver_version"] == "560"
+    assert res["env"]["gpu_name"] == "RTX 4070 Ti"
     # 자식이 채워 보낸 값은 그대로 남는다 — 부모는 뒤에 얹기만 한다.
     assert res["env"]["bnb_compiled_with_cuda"] is True
 

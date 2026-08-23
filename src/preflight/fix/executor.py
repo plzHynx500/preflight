@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 import sys
@@ -108,6 +109,38 @@ def _torch_cuda_tag_for_driver(driver_version: str | None) -> str:
         if major >= min_major:
             return tag
     return _DEFAULT_TORCH_CUDA_TAG
+
+
+#: GeForce RTX 50 시리즈(Blackwell, compute capability sm_120)만 잡는다 — 대소문자
+#: 무시, "RTX 50" 뒤 두 자리(5050/5060/5070/5080/5090)와 "Ti"/"Super"/"Laptop GPU"
+#: 등 뒤에 붙는 접미사는 경계 문자(공백 등)만 있으면 함께 매칭된다.
+#: B100/B200/GB200/RTX PRO 6000 Blackwell 같은 데이터센터·프로 카드는 명명 규칙을
+#: 검증하지 않아 의도적으로 범위 밖이다(#102, ADR-0009).
+_BLACKWELL_GEFORCE_NAME_RE = re.compile(r"\bRTX 50\d{2}\b", re.IGNORECASE)
+
+#: sm_120(Blackwell) 커널은 PyTorch 2.7.0이 최초로 cu128 휠에 넣었다 — cu124·cu126은
+#: 드라이버를 아무리 올려도 "no kernel image is available for execution on the
+#: device"가 그대로 난다(#102). `_TORCH_CUDA_TAG_BY_MIN_DRIVER_MAJOR`에는 cu128을
+#: 넣지 않았다(ADR-0007 — 특정 torch 버전에 동결돼 최신성 기준으로는 손해라서)는
+#: 판단이 아키텍처 정확성보다 우선할 수 없어, 여기서만 별도로 강제한다.
+_BLACKWELL_MIN_TORCH_CUDA_TAG = "cu128"
+
+
+def _is_blackwell_geforce(gpu_name: str | None) -> bool:
+    """GPU 이름이 GeForce RTX 50 시리즈(Blackwell)인지 판별한다."""
+    return bool(gpu_name) and _BLACKWELL_GEFORCE_NAME_RE.search(gpu_name) is not None
+
+
+def _torch_cuda_tag_for_env(env: dict) -> str:
+    """드라이버 major 브랜치로 태그를 고른 뒤, Blackwell GeForce면 최소 cu128을 보장한다.
+
+    cu130(드라이버 major>=580)은 cu128보다 신규 CUDA라 이미 sm_120을 포함하므로
+    그대로 둔다 — override는 cu124/cu126로 떨어졌을 때만 cu128로 끌어올린다.
+    """
+    tag = _torch_cuda_tag_for_driver(env.get("gpu_driver_version"))
+    if tag in (_DEFAULT_TORCH_CUDA_TAG, "cu126") and _is_blackwell_geforce(env.get("gpu_name")):
+        return _BLACKWELL_MIN_TORCH_CUDA_TAG
+    return tag
 
 
 _FIX_MAP: dict[str, tuple[str, list[str] | None]] = {
@@ -242,7 +275,7 @@ def suggest_fix(check_result: dict) -> dict | None:
     message, args = _FIX_MAP.get(cause, _FIX_MAP["unknown"])
     if cause == "torch_cpu_only_build":
         env = check_result.get("env") or {}
-        tag = _torch_cuda_tag_for_driver(env.get("gpu_driver_version"))
+        tag = _torch_cuda_tag_for_env(env)
         args = _torch_cuda_reinstall_args(tag)
     if cause == "cuda_device_not_visible":
         env = check_result.get("env") or {}

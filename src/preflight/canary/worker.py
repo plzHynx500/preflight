@@ -511,11 +511,15 @@ def _base_layer_device(model):
     "4bit 레이어 device=cpu 감지"가 판정 항목이므로 모델 전체가 아니라 베이스
     레이어를 직접 본다.
 
-    얼린 파라미터가 하나도 없으면 **첫 파라미터의 device**로 물러선다. `--model`
-    경로의 fp32 폴백 모델(`AutoModelForCausalLM.from_config`)은 베이스를 얼리지도
-    LoRA를 붙이지도 않아 전부 `requires_grad=True`라, 원래대로면 None이 나갔다 —
-    화면에 `device=None`이 찍히고, 진짜 CPU에 있어도 judge의 `device=="cpu"` FAIL
-    규칙이 발동하지 못한다(#66). 파라미터가 아예 없는 모델만 None이다.
+    얼린 파라미터가 하나도 없으면 **첫 파라미터의 device**로 물러선다. 원래대로면
+    그런 모델에서 None이 나가, 화면에 `device=None`이 찍히고 진짜 CPU에 있어도
+    judge의 `device=="cpu"` FAIL 규칙이 발동하지 못했다(#66).
+
+    이 물러섬을 만든 원인이던 `--model` 경로의 폴백 모델은 #75에서 베이스를 얼리게
+    되어 이제 정상적으로 얼린 베이스를 찾는다. 그래도 물러섬은 남겨둔다 — 폴백에서
+    LoRA를 붙일 대상 `nn.Linear`가 하나도 없거나 `import torch`가 죽어 동결을
+    되돌리는 경로가 여전히 있어서, "얼린 파라미터가 없는 모델"이 사라진 것은 아니다.
+    파라미터가 아예 없는 모델만 None이다.
     """
     first_device = None
     for param in model.parameters():

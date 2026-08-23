@@ -325,7 +325,12 @@ def test_check_yes_reverify_still_fail_leaves_model_check_skipped() -> None:
 
 
 def test_cli_check_with_model_injects_gpu_state() -> None:
-    fake_state = {"free_mb": 10000, "total_mb": 12000, "driver_version": "560.94.03"}
+    fake_state = {
+        "free_mb": 10000,
+        "total_mb": 12000,
+        "driver_version": "560.94.03",
+        "name": "NVIDIA GeForce RTX 4070 Ti",
+    }
     fake_raw_basic = {"status": "ok", "env": {"dummy": 1}}
     fake_raw_model = {"status": "ok", "env": {"dummy": 2}}
 
@@ -355,6 +360,7 @@ def test_cli_check_with_model_injects_gpu_state() -> None:
         assert model_call_arg["env"]["gpu_free_mb"] == 10000
         assert model_call_arg["env"]["gpu_total_mb"] == 12000
         assert model_call_arg["env"]["gpu_driver_version"] == "560.94.03"
+        assert model_call_arg["env"]["gpu_name"] == "NVIDIA GeForce RTX 4070 Ti"
 
 
 def test_fix_attaches_to_fail_not_to_earlier_warn() -> None:
@@ -597,3 +603,34 @@ def test_check_yes_no_fix_command_skips_fix_progress_line() -> None:
 
         assert "수정 명령 실행 중" not in result.stderr
         assert "재확인 중" not in result.stderr
+
+
+def test_python_dash_m_preflight_runs() -> None:
+    """`python -m preflight`가 콘솔 스크립트와 같이 동작한다 (#64).
+
+    Windows에서 venv를 활성화하지 않았거나 `pip install --user`로 설치하면
+    `Scripts/`가 PATH에 없어 `preflight` 명령을 못 찾는다. 그때의 표준 폴백이
+    이 호출인데, `__main__.py`가 없으면 "cannot be directly executed"로 막혔다.
+
+    출력을 캡처(파이프)해서 부르므로 #89(최상위 --help가 리다이렉트 시
+    UnicodeEncodeError로 죽던 문제)의 회귀 가드도 겸한다 — 그 버그가 되살아나면
+    여기서 종료 코드가 1이 된다.
+
+    도움말 **문구**에는 단정을 걸지 않는다. rich가 그리는 화면은 typer/click
+    버전마다 달라서 CI에서만 깨진다(PR #90 리뷰, 상영님 실측: CI click 8.1.8 vs
+    로컬 8.4.2). 여기서 확인할 것은 모듈이 해석돼 정상 종료하는가다.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "preflight", "--help"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cannot be directly executed" not in result.stderr
+    assert "UnicodeEncodeError" not in result.stderr
+    assert "check" in _strip_ansi(result.stdout)
+    assert "cannot be directly executed" not in result.stderr
