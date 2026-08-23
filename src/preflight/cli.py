@@ -292,8 +292,13 @@ def check(
                 )
                 # 1차 결과를 재확인 결과로 갈아끼운다 — 그러지 않으면 수정이
                 # 성공해도 화면에는 1차의 ✖ 줄이 그대로 남고 종료 코드만 0이 된다
-                # (#57). CLI가 얹은 값(model_name·batch_size·seq_len)과 실행한
-                # fix는 유지하고, 자식이 잰 값은 통째로 새 측정값을 쓴다.
+                # (#57). CLI가 얹은 값(model_name·batch_size·seq_len)은 유지하고,
+                # 자식이 잰 값은 통째로 새 측정값을 쓴다.
+                #
+                # `fix`도 여기서 일단 옮기지만 **그대로 남지 않는다** — 아래에서
+                # 재확인 결과로 다시 계산해 덮거나 지운다(#148). 1차 fix는 방금
+                # 실행해 성공했을 수도 있는 명령이라 그대로 두면 끝난 일을 다시
+                # 안내하게 된다.
                 carried = {
                     key: fix_target[key]
                     for key in ("model_name", "batch_size", "seq_len", "fix")
