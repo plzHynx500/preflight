@@ -1153,3 +1153,48 @@ def test_missing_stack_lines_are_not_repeated_in_model_mode(capsys) -> None:
     assert out.count("4bit 사용 불가") == 1, out
     assert out.count("LoRA 사용 불가") == 1, out
     assert "2개 문제 발견" in out, out
+
+
+def test_render_report_notice_long_command_stays_one_line(capsys, monkeypatch) -> None:
+    """`안내:` 메시지에도 실제 개행이 끼면 안 된다 — 본문에 pip 명령이 박혀 있다.
+
+    #91이 `FIX:` 줄에 soft_wrap을 넣었는데 바로 아래 `안내:` 분기는 놓쳤다.
+    `fix_command`가 없는 cause가 훨씬 많아(_FIX_MAP 대부분) 실제로는 이쪽이 더
+    자주 나가고, `torch_cpu_only_build_no_gpu`처럼 메시지 안에 실행 가능한 명령이
+    들어 있는 것들이 있다. 개행이 끼면 복사한 명령이 쪼개져 실패한다(QA 3차 실측).
+    """
+    monkeypatch.setenv("COLUMNS", "40")
+    message = (
+        "설치된 torch가 CPU 전용 빌드이고 NVIDIA GPU도 조회되지 않았다 — "
+        "pip install --force-reinstall torch "
+        "--index-url https://download.pytorch.org/whl/cu124"
+    )
+    raw = {**_OK_RAW, "status": "oom", "memory_delta_mb": None, "elapsed_ms": None}
+    result = judge_result(raw)
+    result["fix"] = {
+        "cause": "torch_cpu_only_build_no_gpu",
+        "message": message,
+        "fix_command": None,
+    }
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert f"안내: {message}" in out
+
+
+def test_render_report_model_name_newline_does_not_inject_line(capsys) -> None:
+    """model_name의 개행이 표제 아래에 가짜 줄로 들어가면 안 된다 (#127).
+
+    `--model` 값은 사용자 입력이라 스크립트로 조립하면 개행이 섞일 수 있다.
+    escape()(#67)는 rich 마크업만 막고 개행은 막지 않아, 판정 줄처럼 보이는
+    임의 텍스트를 화면에 끼워 넣을 수 있었다.
+    """
+    injected = "foo/bar\nFAKE: 모든 항목 정상"
+    model_result = judge_result({**_MODEL_MODE_RAW, "model_name": injected})
+
+    render_report([judge_result(_OK_RAW), model_result])
+
+    out = capsys.readouterr().out
+    assert "모델 체크: foo/bar FAKE: 모든 항목 정상" in out
+    assert "\nFAKE:" not in out
