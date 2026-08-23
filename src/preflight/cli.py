@@ -142,6 +142,23 @@ def _describe_fix_failure(error: FixExecutionError, command: str) -> str:
     )
 
 
+def _reject_empty_model(value: Optional[str]) -> Optional[str]:
+    """`--model ""`을 파싱 단계에서 거부한다 (#126).
+
+    빈 문자열은 파이썬에서 falsy라 `if model:`이 "값 없음(`None`)"과 구분하지
+    못해, 뒤에서 모델 체크 자체가 조용히 사라졌다 — CI에서 `--model "$MODEL"`의
+    `$MODEL`이 비었을 때 특히 위험하다(에러도 경고도 없이 검증이 하나 빠진 채
+    통과). `--batch-size 0`(#59)과 같은 이유로 canary 실행 전에 거부한다.
+    공백만 있는 문자열은 이 검증 대상이 아니다 — 이미 "주어진 값"으로 정상
+    처리되어 모델 체크가 시도된다.
+    """
+    if value == "":
+        raise typer.BadParameter(
+            "빈 문자열은 허용되지 않는다 (모델명을 지정하거나 --model 자체를 생략하세요)"
+        )
+    return value
+
+
 @app.command()
 def check(
     # `from __future__ import annotations`가 있어도 여기서는 `X | None`을 쓸 수 없다 —
@@ -149,7 +166,9 @@ def check(
     # 어노테이션을 다시 평가하기 때문이다. 그 순간 Python 3.9에서 `str | None`이
     # 실제로 계산되어 TypeError가 난다(#42). requires-python이 ">=3.9"인 한
     # 런타임에 읽히는 어노테이션은 Optional[...] 표기를 유지해야 한다.
-    model: Optional[str] = typer.Option(None, "--model", help="HuggingFace 모델명 또는 config"),
+    model: Optional[str] = typer.Option(
+        None, "--model", callback=_reject_empty_model, help="HuggingFace 모델명 또는 config"
+    ),
     batch_size: Optional[int] = typer.Option(
         None, "--batch-size", min=1, help="모델 체크의 배치 크기 (기본 1, 1 이상 정수)"
     ),
