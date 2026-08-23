@@ -422,6 +422,25 @@ def _is_quant_fallback(result: dict) -> bool:
     )
 
 
+def _quant_fallback_detail(result: dict, model_mode: bool) -> str | None:
+    """폴백 사유를 detail 줄로 보여줄지 정한다 (#147).
+
+    **bitsandbytes 미설치가 확정인 기본 체크에서는 붙이지 않는다.** 같은 화면의
+    `⚠ 4bit 사용 불가` 줄이 이미 원인을 말하고 있어(#117), 여기에
+    `ModuleNotFoundError: No module named ...`까지 붙이면 #142에서 막 없앤 원인
+    중복이 형태만 바꿔 되살아난다.
+
+    `--model` 모드에는 그 ⚠ 줄이 아예 없으므로(설치 여부는 기본 체크 한 곳에서만
+    그린다) 항상 보여준다 — 그리고 #134가 숨어 있던 자리가 정확히 거기다.
+    """
+    reason = result.get("quant_fallback_reason")
+    if not reason:
+        return None
+    if not model_mode and (result.get("env") or {}).get("bitsandbytes_installed") is False:
+        return None
+    return reason
+
+
 def _quant_fallback_line(result: dict, model_mode: bool = False) -> _Line | None:
     """4bit 폴백이 있었다는 정보성 줄. 폴백이 아니면 None.
 
@@ -446,7 +465,13 @@ def _quant_fallback_line(result: dict, model_mode: bool = False) -> _Line | None
         message = _BNB_MISSING_QUANT_FALLBACK_MESSAGE
     else:
         message = _REASON_MESSAGES["quant_fallback"]
-    return _Line("ℹ", "dim", f"4bit 레이어 폴백    {message}", is_problem=False)
+    return _Line(
+        "ℹ",
+        "dim",
+        f"4bit 레이어 폴백    {message}",
+        detail=_quant_fallback_detail(result, model_mode),
+        is_problem=False,
+    )
 
 
 def _quant_lines(result: dict) -> list[_Line]:

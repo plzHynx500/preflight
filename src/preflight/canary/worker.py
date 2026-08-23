@@ -355,6 +355,7 @@ def _blank_result(status: str, error_log: str | None, env: dict | None = None) -
         "elapsed_ms": None,
         "cpu_multiplier": None,
         "quant_backend": None,
+        "quant_fallback_reason": None,
         "error_log": error_log,
         "env": env,
         "rss_peak_mb": _read_rss_peak_mb(),
@@ -457,14 +458,16 @@ def _run_model_check(torch, model_name: str, batch_size: int, seq_len: int, env:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model, config, quant_backend = build_dummy_model(model_name, device)
+    model, config, quant_backend, quant_fallback_reason = build_dummy_model(model_name, device)
     # **forward보다 먼저 담는다.** seq_len 초과는 GPU 커널 안에서 터지는데, 부모가
     # 그걸 원인으로 특정하려면 이 값이 실패 결과에 실려 있어야 한다. `env`는
     # main()이 준 것과 같은 dict라 여기서 채우면 예외 경로의 기록에도 그대로 남는다.
     env["model_max_position"] = _max_position_len(config)
     dummy_input = build_hf_dummy_input(batch_size, seq_len, config.vocab_size, device)
 
-    measured = _execute_canary_cycle(torch, model, dummy_input, device, quant_backend)
+    measured = _execute_canary_cycle(
+        torch, model, dummy_input, device, quant_backend, quant_fallback_reason
+    )
 
     return {
         "status": STATUS_OK,
@@ -473,6 +476,8 @@ def _run_model_check(torch, model_name: str, batch_size: int, seq_len: int, env:
         "elapsed_ms": measured["elapsed_ms"],
         "cpu_multiplier": None,
         "quant_backend": measured["quant_backend"],
+        # 왜 4bit 대신 nn.Linear로 쟀는지(#147). 폴백이 아니면 None이다.
+        "quant_fallback_reason": measured["quant_fallback_reason"],
         "error_log": None,
         "env": env,
         "rss_peak_mb": _read_rss_peak_mb(),
@@ -508,6 +513,8 @@ def _run_basic_check(torch, batch_size: int, seq_len: int, env: dict) -> dict:
         "elapsed_ms": measured["elapsed_ms"],
         "cpu_multiplier": cpu_multiplier,
         "quant_backend": measured["quant_backend"],
+        # 왜 4bit 대신 nn.Linear로 쟀는지(#147). 폴백이 아니면 None이다.
+        "quant_fallback_reason": measured["quant_fallback_reason"],
         "error_log": None,
         "env": env,
         "rss_peak_mb": _read_rss_peak_mb(),
@@ -552,12 +559,18 @@ def _measure_once(torch, device: str, dtype, batch_size: int, seq_len: int, pref
 
     측정 방식의 근거는 docs/architecture.md §4 "실행 횟수"·"측정 방법" 참고.
     """
-    model, quant_backend = build_minimal_canary_model(device, dtype, prefer_4bit)
+    model, quant_backend, quant_fallback_reason = build_minimal_canary_model(
+        device, dtype, prefer_4bit
+    )
     dummy_input = build_minimal_canary_input(batch_size, seq_len, device, dtype)
-    return _execute_canary_cycle(torch, model, dummy_input, device, quant_backend)
+    return _execute_canary_cycle(
+        torch, model, dummy_input, device, quant_backend, quant_fallback_reason
+    )
 
 
-def _execute_canary_cycle(torch, model, dummy_input, device: str, quant_backend: str):
+def _execute_canary_cycle(
+    torch, model, dummy_input, device: str, quant_backend: str, quant_fallback_reason=None
+):
     trainable = [param for param in model.parameters() if param.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=1e-4)
 
@@ -590,6 +603,7 @@ def _execute_canary_cycle(torch, model, dummy_input, device: str, quant_backend:
         "elapsed_ms": elapsed_ms,
         "memory_delta_mb": memory_delta_mb,
         "quant_backend": quant_backend,
+        "quant_fallback_reason": quant_fallback_reason,
     }
 
 

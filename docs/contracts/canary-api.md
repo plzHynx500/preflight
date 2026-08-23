@@ -20,6 +20,7 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
         "elapsed_ms": 12.3,         # status != "ok"면 None
         "cpu_multiplier": None,     # 기본 체크에서만 값이 들어감
         "quant_backend": "bnb-4bit",  # "bnb-4bit" | "nn-linear-fallback"
+        "quant_fallback_reason": None,  # 폴백했을 때만 "<예외 종류>: <메시지>"
         "error_log": None,          # status != "ok"일 때만 채워짐 — 원본 stderr/예외 메시지
         "env": {...},               # 환경 사실 — 아래 참고. 못 읽으면 None
         "rss_peak_mb": 1401.7,      # 이 기록을 남긴 시점까지의 호스트 RAM 최고점. 못 재면 None
@@ -33,6 +34,8 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 `status`는 사람이 읽는 값이 아니라 다음 단계가 기계적으로 분기하는 스위치다. `"import_crash"`·`"oom"`은 각각 재설치·batch 축소라는 서로 다른 FIX로 이어지므로, 그 둘로 확정할 수 없는 실패(모델명 오타로 config 조회 실패, 미구현 경로 호출 등)를 둘 중 하나로 적으면 사용자에게 엉뚱한 해결 명령이 제시된다. 그런 실패는 `"error"`로 두고 `error_log`에 원본 메시지를 담는다.
 
 `quant_backend`는 canary가 실제로 어떤 연산 경로로 돌았는지를 나타낸다. 구버전 bitsandbytes 등으로 4bit 레이어 구성·실행이 실패해 평범한 `nn.Linear`로 대체된 경우 `"nn-linear-fallback"`이 되며([architecture.md §6-01](../architecture.md)), 이때는 "4bit 레이어 device=cpu" 판정을 할 수 없으므로 리포트에 폴백 사실을 명시해야 한다.
+
+`quant_fallback_reason`은 **왜 폴백했는지**를 담은 한 줄(`"<예외 종류>: <메시지>"`)이다. 폴백이 아니면 `None`이고 트레이스백은 싣지 않는다 — 그건 `error_log`의 몫이다. 폴백 자체는 정상 동작이라 판정에 영향을 주지 않지만, **사유를 버리면 도구 자신의 버그가 환경 탓으로 보인다**. 실제로 #134(RoPE `inv_freq`가 meta로 남아 forward에서 죽던 버그)가 이 자리에 가려져, 화면에는 "4bit 레이어 구성 실패 → 폴백"으로만 나갔다(#147). `prefer_4bit=False`처럼 **일부러** 4bit을 쓰지 않은 경우(CPU 기준선 재시도)는 실패한 적이 없으므로 `None`이다.
 
 | 필드 | 채우는 쪽 | 쓰는 쪽 |
 |---|---|---|

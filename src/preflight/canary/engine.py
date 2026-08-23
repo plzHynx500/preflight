@@ -25,6 +25,7 @@ RESULT_FIELDS = (
     "elapsed_ms",
     "cpu_multiplier",
     "quant_backend",
+    "quant_fallback_reason",
     "error_log",
     "env",
     "rss_peak_mb",

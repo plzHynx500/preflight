@@ -79,7 +79,7 @@ def build_dummy_model(model_name: str, device: str = "cuda"):
     이 경로에서도 못 버틸 수 있다 — "4bit이 안 되는 환경"이라는 신호로는 유효하지만,
     폴백이 만능은 아니라는 뜻이다.
 
-    `(model, config, quant_backend)`를 돌려준다 — `config`는 `build_dummy_input()`이
+    `(model, config, quant_backend, quant_fallback_reason)`을 돌려준다 — `config`는 `build_dummy_input()`이
     토큰 ID를 만들 때 필요한 `vocab_size`를 담고 있고(docs/contracts/canary-api.md
     참고), `quant_backend`는 W9에서 `run_canary_check()` 반환 스키마에 채워 넣을 값이다.
 
@@ -87,8 +87,8 @@ def build_dummy_model(model_name: str, device: str = "cuda"):
     보인다 — 리포트에 파라미터 수를 찍을 일이 있으면 `config`에서 계산해야 한다.
     """
     config = _load_config(model_name)
-    model, quant_backend = _build_qlora_model(config, device)
-    return model, config, quant_backend
+    model, quant_backend, fallback_reason = _build_qlora_model(config, device)
+    return model, config, quant_backend, fallback_reason
 
 
 class ModelConfigError(RuntimeError):
@@ -177,10 +177,17 @@ def _build_qlora_model(config, device: str):
         from transformers import AutoModelForCausalLM
         from transformers.integrations.bitsandbytes import replace_with_bnb_linear
 
-        return _materialize_qlora(
+        model, quant_backend = _materialize_qlora(
             config, device, torch, AutoModelForCausalLM, replace_with_bnb_linear
         )
-    except Exception:  # noqa: BLE001 - 실패 종류와 무관하게 nn.Linear 폴백한다
+        return model, quant_backend, None
+    except Exception as error:  # noqa: BLE001 - 실패 종류와 무관하게 nn.Linear 폴백한다
+        # **왜 폴백했는지 남긴다**(#147). 예전에는 이 except가 예외를 통째로 삼켜서,
+        # 우리 코드의 버그(#134: RoPE inv_freq가 meta로 남아 forward에서 죽던 것)까지
+        # 화면에는 "4bit 레이어 구성 실패 → 폴백"으로만 보였다. 읽는 사람은 "이 환경이
+        # 4bit을 못 쓰는구나"로 받아들일 뿐, 도구 자신의 결함을 의심할 단서가 없었다.
+        fallback_reason = describe_fallback_cause(error)
+
         from transformers import AutoModelForCausalLM
 
         model = AutoModelForCausalLM.from_config(config)
@@ -197,7 +204,7 @@ def _build_qlora_model(config, device: str):
         # `import torch` 실패로도 들어올 수 있어서, 여기서 torch를 또 부르면 폴백
         # 자체가 같은 이유로 죽는다. nn.Module.to()는 문자열을 그대로 받는다.
         model = model.to(device)
-        return model, QUANT_BACKEND_FALLBACK
+        return model, QUANT_BACKEND_FALLBACK, fallback_reason
 
 
 def _freeze_base_and_attach_lora(model) -> bool:
@@ -426,19 +433,21 @@ def build_minimal_canary_model(device: str, dtype, prefer_4bit: bool = True):
             return self.base(x) + self.adapter_up(self.adapter_down(x))
 
     quant_backend = QUANT_BACKEND_FALLBACK
+    fallback_reason = None
     blocks = []
     for _ in range(MINIMAL_NUM_BLOCKS):
-        base, backend = _build_base_linear(MINIMAL_HIDDEN_SIZE, dtype, prefer_4bit)
+        base, backend, reason = _build_base_linear(MINIMAL_HIDDEN_SIZE, dtype, prefer_4bit)
         # 베이스는 얼린다 — QLoRA와 같이 어댑터만 gradient·옵티마이저 상태를 갖는다.
         for param in base.parameters():
             param.requires_grad_(False)
         quant_backend = backend
+        fallback_reason = reason
         blocks.append(_CanaryBlock(base, MINIMAL_HIDDEN_SIZE, MINIMAL_ADAPTER_RANK, dtype))
 
     model = nn.Sequential(*blocks)
     # Linear4bit은 CUDA로 옮기는 이 시점에 실제로 양자화된다.
     model = model.to(torch.device(device))
-    return model, quant_backend
+    return model, quant_backend, fallback_reason
 
 
 def build_minimal_canary_input(batch_size: int, seq_len: int, device: str, dtype):
@@ -455,24 +464,41 @@ def build_minimal_canary_input(batch_size: int, seq_len: int, device: str, dtype
 
 
 def _build_base_linear(hidden: int, dtype, prefer_4bit: bool):
-    """베이스 레이어 한 장을 만들어 `(layer, quant_backend)`로 돌려준다."""
+    """베이스 레이어 한 장을 `(layer, quant_backend, 폴백 사유)`로 돌려준다.
+
+    `prefer_4bit=False`는 CPU 기준선 재시도처럼 **일부러** 4bit을 안 쓰는 경우라
+    사유가 None이다 — 실패한 적이 없으니 설명할 것도 없다(#147).
+    """
     from torch import nn
 
-    layer = _try_build_4bit_linear(hidden, dtype) if prefer_4bit else None
+    layer, reason = _try_build_4bit_linear(hidden, dtype) if prefer_4bit else (None, None)
     if layer is not None:
-        return layer, QUANT_BACKEND_4BIT
-    return nn.Linear(hidden, hidden, bias=False, dtype=dtype), QUANT_BACKEND_FALLBACK
+        return layer, QUANT_BACKEND_4BIT, None
+    return nn.Linear(hidden, hidden, bias=False, dtype=dtype), QUANT_BACKEND_FALLBACK, reason
+
+
+def describe_fallback_cause(error: BaseException) -> str:
+    """폴백 사유 한 줄 — 예외 **종류와 메시지만** 남긴다 (#147).
+
+    트레이스백은 싣지 않는다. 이 값은 판정이 아니라 "왜 4bit 대신 nn.Linear로
+    쟀는가"를 밝히는 한 줄이고, 트레이스백이 필요한 실패는 이미 `error_log`가
+    맡고 있다.
+    """
+    return f"{type(error).__name__}: {error}"
 
 
 def _try_build_4bit_linear(hidden: int, dtype):
-    """bitsandbytes 4bit 레이어. 만들 수 없으면 None을 돌려준다.
+    """bitsandbytes 4bit 레이어를 `(layer, 폴백 사유)`로 돌려준다.
 
-    bitsandbytes 미설치·구버전·빌드 문제 어느 쪽이든 폴백이 정상 동작이므로 여기서
-    죽이지 않는다. 폴백 사실은 호출 측이 `quant_backend`로 위에 알린다.
+    만들 수 없으면 `(None, "<예외 종류>: <메시지>")`다. bitsandbytes 미설치·구버전·
+    빌드 문제 어느 쪽이든 폴백이 정상 동작이므로 여기서 죽이지 않는다. 다만 **왜
+    폴백했는지는 남긴다** — 예전에는 예외를 통째로 삼켜서, 우리 코드의 버그까지
+    화면에는 그냥 "폴백했다"로만 보였다(#147; #134가 그렇게 가려져 있었다).
     """
     try:
         from bitsandbytes.nn import Linear4bit
 
-        return Linear4bit(hidden, hidden, bias=False, compute_dtype=dtype, quant_type="nf4")
-    except Exception:  # noqa: BLE001 - 실패 종류와 무관하게 폴백한다
-        return None
+        layer = Linear4bit(hidden, hidden, bias=False, compute_dtype=dtype, quant_type="nf4")
+        return layer, None
+    except Exception as error:  # noqa: BLE001 - 실패 종류와 무관하게 폴백한다
+        return None, describe_fallback_cause(error)
