@@ -8,12 +8,14 @@ torch를 건드리는 순간 격리가 무력화된다. 모델 구성과 실행�
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 #: `run_canary_check()`가 항상 돌려주는 필드. docs/contracts/canary-api.md와 일치해야 한다.
 RESULT_FIELDS = (
@@ -35,6 +37,14 @@ VALID_STATUSES = ("ok", "oom", "import_crash", "error")
 #: `--model`은 config 조회까지 더해지므로 넉넉하게 잡았다.
 WORKER_TIMEOUT_SEC = 600
 
+#: 부모가 강제 종료되면(작업 관리자, `taskkill /F`, CI job kill 등) `_run_worker()`의
+#: `finally`가 전혀 돌지 않아 `preflight-canary-*` workdir가 영구히 남는다(#132). 매
+#: 실행 시작 시 이만큼(1시간) 지난 잔여물만 지워, 동시에 돌고 있는 다른 인스턴스의
+#: workdir는 건드리지 않는다. ADR-0002의 "부모가 죽어도 자식은 살아남아야 한다"는
+#: 결정을 뒤집지 않는 가장 얕은 보완책이다 — Job Object로 자식까지 묶는 방안은 그
+#: 결정과 상충할 수 있어 별도 설계 판단이 필요하므로 이번 범위에 넣지 않았다.
+STALE_WORKDIR_AGE_SEC = 3600
+
 
 def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> dict:
     """canary/worker.py를 subprocess로 격리 실행하고 원시 측정값을 반환한다.
@@ -53,6 +63,7 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 
 
 def _run_worker(model_name: str | None, batch_size: int, seq_len: int) -> dict:
+    _cleanup_stale_workdirs()
     workdir = tempfile.mkdtemp(prefix="preflight-canary-")
     spec_path = os.path.join(workdir, "spec.json")
     result_path = os.path.join(workdir, "result.json")
@@ -93,6 +104,26 @@ def _run_worker(model_name: str | None, batch_size: int, seq_len: int) -> dict:
         return _normalize(raw)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _cleanup_stale_workdirs() -> None:
+    """이전 실행이 강제 종료돼 남긴 잔여 workdir를 지운다(#132).
+
+    청소 자체가 실패해도 지금 실행하려는 canary 체크를 막으면 안 되므로, 무엇이 나든
+    삼킨다 — 여기서 새는 예외가 `run_canary_check()`의 바깥 `try`에 잡히면 정상적인
+    체크 실패(`status="error"`)로 오진된다.
+    """
+    try:
+        pattern = os.path.join(tempfile.gettempdir(), "preflight-canary-*")
+        now = time.time()
+        for stale_dir in glob.glob(pattern):
+            try:
+                if now - os.path.getmtime(stale_dir) >= STALE_WORKDIR_AGE_SEC:
+                    shutil.rmtree(stale_dir, ignore_errors=True)
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001, S110 - 정리 실패가 canary 체크 자체를 막으면 안 된다
+        pass
 
 
 def _read_result(result_path: str):
