@@ -171,6 +171,11 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
     줄였을 때는 마지막에 안내 한 줄을 덧붙인다. 가장 짧은 실패 로그(torch 미설치)도
     230자라 사실상 모든 에러가 잘리는데, 잘렸다는 말이 없으면 사용자는 그게
     전부라고 믿는다. 전문은 --json에 그대로 있다.
+
+    **로그 본문은 `max_chars`를 넘지 않는다(#71).** 안내 문구(`_TRUNCATION_NOTE`)는
+    로그가 아니라 메타 정보라 이 예산 밖에 별도로 붙는다. 예산 준수는 분기마다가
+    아니라 나가는 문자열에서 한 번 더 확인한다 — 절삭 버그가 세 번 났고(#56 ·
+    PR #48 리뷰 · #71) 전부 "어떤 분기 하나가 예산을 안 지킨" 형태였다.
     """
     text = text.strip()
     if len(text) <= max_chars:
@@ -179,7 +184,7 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
     lines = text.splitlines()
     if len(lines) == 1:
         half = (max_chars - 1) // 2
-        return f"{text[:half]}…{text[-half:]}\n{_TRUNCATION_NOTE}"
+        return f"{_clip(text[:half], half)}…{text[-half:]}\n{_TRUNCATION_NOTE}"
 
     head_index = 0
     if lines[0].startswith("Traceback (most recent call last)") and len(lines) > 1:
@@ -197,7 +202,10 @@ def _truncate_error_log(text: str, max_chars: int = _ERROR_LOG_MAX_CHARS) -> str
     # 꼬리가 head 줄까지 거슬러 올라가면 같은 줄이 두 번 찍힌다.
     tail = _select_tail(lines, tail_budget, min_start=head_index + 1)
 
-    return f"{head}\n…\n{tail}\n{_TRUNCATION_NOTE}"
+    # 분기 하나가 예산을 어겨도 여기서 막힌다(#71) — head/tail 각각의 예산 계산에
+    # 기대지 않고 나가는 본문을 한 번 더 자른다.
+    body = _clip(f"{head}\n…\n{tail}", max_chars)
+    return f"{body}\n{_TRUNCATION_NOTE}"
 
 
 #: 트레이스백에서 "예외 줄"로 볼 패턴 — `OSError: ...`,
@@ -226,6 +234,17 @@ def _known_error_headline(error_log: str) -> str | None:
     return message
 
 
+def _clip(text: str, budget: int) -> str:
+    """예산을 넘으면 **앞을 남기고** 뒤를 자른다(#71).
+
+    예외 줄(`OSError: ...`)은 타입과 메시지 앞부분이 맨 앞에 있어서 앞이 정보다 —
+    프레임 줄이 정반대(파일명·줄 번호가 뒤에 있어 뒤를 남긴다, #56)인 것과 대비된다.
+    """
+    if len(text) <= budget:
+        return text
+    return text[: budget - 1] + "…"
+
+
 def _select_tail(lines: list[str], tail_budget: int, min_start: int = 0) -> str:
     """예산 안에서 남길 뒤쪽 줄들. **마지막 예외 줄은 어떤 경우에도 버리지 않는다.**
 
@@ -240,8 +259,11 @@ def _select_tail(lines: list[str], tail_budget: int, min_start: int = 0) -> str:
     예외 줄을 못 찾으면 마지막 줄을 anchor로 삼는다(기존 동작). `min_start`는 head로
     이미 찍은 줄을 꼬리가 다시 삼키지 않게 막는 하한선이다.
 
-    anchor 한 줄이 예산보다 길어도 그 줄은 통째로 남긴다 — 앞을 자르면 예외
-    타입만 남고 정작 메시지가 사라진다.
+    **anchor 한 줄이 예산보다 길면 앞을 남기고 뒤를 자른다(#71).** 예외 줄은
+    타입과 메시지 앞부분이 맨 앞에 오므로 앞이 정보다. 예전에는 "앞을 자르면
+    타입이 사라진다"는 이유로 그 줄을 통째로 남겼는데, 상한이 없어서 마지막
+    줄이 길면 절삭이 통째로 무력화됐다 — 5070자 입력이 5076자로 나와 화면이
+    로그에 뒤덮이고 판정 줄이 밀려났다.
     """
     anchor = len(lines) - 1
     for index in range(len(lines) - 1, min_start - 1, -1):
@@ -260,7 +282,9 @@ def _select_tail(lines: list[str], tail_budget: int, min_start: int = 0) -> str:
     while start > min_start and len(joined(start - 1, end)) <= tail_budget:
         start -= 1
 
-    return joined(start, end)
+    # 위 두 루프는 anchor 줄 하나까지만 줄일 수 있다 — 그 한 줄이 예산보다 길면
+    # 여기서 잘라야 예산이 지켜진다(#71).
+    return _clip(joined(start, end), tail_budget)
 
 
 def _timing_line(result: dict) -> _Line:

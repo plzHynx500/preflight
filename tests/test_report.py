@@ -1050,8 +1050,17 @@ def test_render_report_single_traceback_tail_is_unchanged(capsys) -> None:
     assert "line 77, in main" in out
 
 
-def test_truncate_error_log_keeps_whole_exception_line_over_budget() -> None:
-    """예외 줄 하나가 예산보다 길어도 앞을 자르지 않는다 — 타입만 남고 메시지가 사라진다."""
+def test_truncate_error_log_keeps_exception_head_when_line_over_budget() -> None:
+    """예외 줄 하나가 예산보다 길면 **앞을 남기고** 자른다 (#80 → #71로 계약 변경).
+
+    원래는 "앞을 자르면 타입만 남고 메시지가 사라진다"는 이유로 그 줄을 통째로
+    남겼는데(#80), 상한이 없어 절삭이 무력화됐다 — 입력 5070자가 출력 5076자가
+    되어 화면이 로그에 뒤덮였다(#71). 앞을 남기면 **타입과 메시지 앞부분이 둘 다**
+    보존되므로 원래 의도는 그대로 지켜진다.
+
+    체인 예외의 부연 설명("private repository … token")을 버리는 #62의 성질도
+    함께 유지돼야 한다.
+    """
     long_message = "x" * 400
     log = (
         "Traceback (most recent call last):\n"
@@ -1063,8 +1072,9 @@ def test_truncate_error_log_keeps_whole_exception_line_over_budget() -> None:
 
     result = _truncate_error_log(log)
 
-    assert f"OSError: {long_message}" in result
+    assert "OSError: xxx" in result
     assert "private repository" not in result
+    assert len(_log_body(result)) <= 200
 
 
 def test_render_report_long_path_first_frame_keeps_file_and_line(capsys) -> None:
@@ -1153,3 +1163,56 @@ def test_missing_stack_lines_are_not_repeated_in_model_mode(capsys) -> None:
     assert out.count("4bit 사용 불가") == 1, out
     assert out.count("LoRA 사용 불가") == 1, out
     assert "2개 문제 발견" in out, out
+
+
+# ── 절삭 예산 상한 (#71) ──────────────────────────────────────────────────────
+#
+# 마지막 예외 줄이 예산보다 길면 "그 줄만이라도 통째로" 남기는 분기에 상한이 없어,
+# 절삭이 통째로 무력화되고 원문보다 긴 출력이 나왔다(입력 5070자 → 출력 5076자).
+
+
+def _log_body(rendered: str) -> str:
+    """절삭 결과에서 안내 문구를 뺀 로그 본문. 예산은 본문에만 적용된다."""
+    from preflight.report import _TRUNCATION_NOTE
+
+    return rendered.rsplit("\n" + _TRUNCATION_NOTE, 1)[0]
+
+
+def test_truncate_error_log_caps_long_final_exception_line() -> None:
+    """마지막 예외 줄이 아무리 길어도 본문이 예산을 넘지 않는다(#71)."""
+    log = (
+        "Traceback (most recent call last):\n"
+        + '  File "hub.py", line 100, in _get\n' * 20
+        + "RuntimeError: "
+        + "X" * 5000
+    )
+
+    result = _truncate_error_log(log)
+
+    assert len(_log_body(result)) <= 200
+    assert len(result) < len(log)
+
+
+def test_truncate_error_log_keeps_exception_type_when_clipping() -> None:
+    """길어서 자르더라도 예외 타입과 메시지 앞부분은 남는다 — 앞이 정보다(#71)."""
+    log = (
+        "Traceback (most recent call last):\n"
+        '  File "a.py", line 1, in <module>\n'
+        "    boom()\n"
+        "RuntimeError: 실제 원인 메시지가 여기 " + "길게 " * 200
+    )
+
+    result = _truncate_error_log(log)
+
+    assert "RuntimeError: 실제 원인 메시지가 여기" in result
+    assert len(_log_body(result)) <= 200
+
+
+def test_truncate_error_log_caps_long_single_line() -> None:
+    """개행 없는 한 줄 로그도 예산을 지킨다(#71) — engine이 만드는 형태다."""
+    log = "OSError: " + "y" * 3000
+
+    result = _truncate_error_log(log)
+
+    assert len(_log_body(result)) <= 200
+    assert result.startswith("OSError: ")
