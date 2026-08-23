@@ -24,7 +24,7 @@ dependencies = [
     # 알려주는 도구로서는 그 자체가 오진 신호가 되므로 원본 패키지를 직접 잡는다.
     "nvidia-ml-py>=12",
 ]
-# torch/transformers/peft/bitsandbytes는 의도적으로 하드 의존성에 넣지 않는다 —
+# torch/transformers/bitsandbytes는 의도적으로 하드 의존성에 넣지 않는다 —
 # 사용자 venv에 이미 설치된 버전을 그대로 불러와 검증하는 것이 핵심 설계이므로
 # (docs/architecture.md §2 "학습 스택 연동" 참고), preflight 자신의 설치가 그 환경을
 # 덮어쓰면 안 된다.
