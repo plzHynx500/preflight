@@ -185,6 +185,34 @@ def _reject_empty_model(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def _reject_size_args_without_model(
+    model: Optional[str], batch_size: Optional[int], seq_len: Optional[int]
+) -> None:
+    """`--model` 없이 `--batch-size`·`--seq-len`을 주면 거부한다 (#150).
+
+    이 둘은 모델 체크 전용이다(docs/contracts/cli.md) — 기본 체크는 판정 임계값의
+    근거가 걸린 고정 크기(batch=1, seq=8)로만 돈다([ADR-0004]). 예전에는 `--model`
+    없이 주면 조용히 무시됐다 — 사용자는 준 크기로 쟀다고 믿지만 실제로는 1×8을
+    잰 결과를 본다(거짓 안심). Typer 옵션 콜백은 다른 옵션 값을 볼 수 없어(여기서는
+    `--model` 값을 봐야 함) `_reject_empty_model`처럼 콜백으로 두지 못하고 명령
+    본문 초입에서 검사한다.
+    """
+    if model:
+        return
+    given = [
+        name
+        for name, value in (("--batch-size", batch_size), ("--seq-len", seq_len))
+        if value is not None
+    ]
+    if not given:
+        return
+    hint = "/".join(given)
+    raise typer.BadParameter(
+        f"{hint}은 --model 없이 쓸 수 없다 (모델 체크 전용) — --model과 함께 쓰거나 {hint}를 빼세요.",
+        param_hint=given[0],
+    )
+
+
 @app.command()
 def check(
     # `from __future__ import annotations`가 있어도 여기서는 `X | None`을 쓸 수 없다 —
@@ -205,6 +233,8 @@ def check(
     json_output: bool = typer.Option(False, "--json", help="JSON 형식으로 결과 출력"),
 ) -> None:
     """GPU/CUDA 환경이 실제로 파인튜닝 가능한지 canary 연산으로 진단한다."""
+    _reject_size_args_without_model(model, batch_size, seq_len)
+
     # 상세 흐름: docs/contracts/canary-api.md §5.4
     start_time = time.perf_counter()
 

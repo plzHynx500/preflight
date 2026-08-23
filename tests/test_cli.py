@@ -450,6 +450,73 @@ def test_seq_len_zero_is_rejected_by_parser() -> None:
     assert "seq-len" in _strip_ansi(result.output)
 
 
+def test_batch_size_without_model_is_rejected() -> None:
+    """`--model` 없이 `--batch-size`만 주면 명령 초입에서 거부한다 (#150).
+
+    예전에는 조용히 무시되고 기본 체크가 batch=1로 돌아 PASS가 나갔다 — 사용자는
+    자기가 준 크기를 쟀다고 믿는 거짓 안심이었다.
+    """
+    result = runner.invoke(app, ["check", "--batch-size", "128"])
+
+    assert result.exit_code != 0
+    output = _strip_ansi(result.output)
+    assert "batch-size" in output
+    assert "--model" in output
+
+
+def test_seq_len_without_model_is_rejected() -> None:
+    """`--model` 없이 `--seq-len`만 줘도 같은 이유로 거부된다 (#150)."""
+    result = runner.invoke(app, ["check", "--seq-len", "4096"])
+
+    assert result.exit_code != 0
+    output = _strip_ansi(result.output)
+    assert "seq-len" in output
+    assert "--model" in output
+
+
+def test_batch_size_and_seq_len_without_model_is_rejected() -> None:
+    """`--model` 없이 둘 다 줘도 거부된다 (#150) — canary가 아예 돌지 않는다."""
+    with patch("preflight.cli.run_canary_check") as mock_run:
+        result = runner.invoke(app, ["check", "--batch-size", "128", "--seq-len", "4096"])
+
+    assert result.exit_code != 0
+    assert mock_run.call_count == 0
+
+
+def test_batch_size_and_seq_len_with_model_is_unaffected() -> None:
+    """`--model`과 함께 주면 지금처럼 동작한다 — 회귀 없음 (#150)."""
+    fake_raw = {"status": "ok"}
+    fake_res = {"verdict": "PASS"}
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", return_value=fake_raw) as mock_run,
+        patch("preflight.cli.judge_result", return_value=fake_res),
+    ):
+        result = stderr_runner.invoke(
+            app,
+            [
+                "check",
+                "--model",
+                "dummy/model",
+                "--batch-size",
+                "128",
+                "--seq-len",
+                "4096",
+                "--json",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert mock_run.call_count == 2
+    _, model_call_kwargs = mock_run.call_args_list[1]
+    assert model_call_kwargs["batch_size"] == 128
+    assert model_call_kwargs["seq_len"] == 4096
+    payload = json.loads(result.stdout)
+    assert payload["results"][1]["batch_size"] == 128
+    assert payload["results"][1]["seq_len"] == 4096
+
+
 def test_model_empty_string_is_rejected_by_parser() -> None:
     """`--model ""`은 canary를 돌리기 전에 파서가 거부한다 (#126).
 
