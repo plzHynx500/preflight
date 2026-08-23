@@ -43,6 +43,14 @@ _MODEL_MODE_QUANT_FALLBACK_MESSAGE = (
     "4bit 레이어 구성 실패 → 양자화 없는 베이스로 실측됨 (VRAM 수치가 QLoRA 기준보다 크다)"
 )
 
+#: bitsandbytes가 **설치조차 안 된** 것이 확실한 경우의 문구(#60, #44).
+#: 기본 문구는 "미설치 또는 구버전"으로 뭉뚱그리는데, `env.bitsandbytes_installed`가
+#: False면 둘 중 어느 쪽인지 확정할 수 있어 그대로 알려준다.
+_BNB_MISSING_QUANT_FALLBACK_MESSAGE = (
+    "bitsandbytes가 설치되어 있지 않아 4bit 레이어 구성 실패 → nn.Linear로 대체 실행됨"
+    " (device=cpu 판정 생략)"
+)
+
 _ERROR_LOG_MAX_CHARS = 200
 _TRUNCATION_NOTE = "(로그 일부만 표시 — 전문은 preflight check --json)"
 
@@ -342,9 +350,15 @@ def _quant_fallback_line(result: dict, model_mode: bool = False) -> _Line | None
     ):
         return None
 
-    message = (
-        _MODEL_MODE_QUANT_FALLBACK_MESSAGE if model_mode else _REASON_MESSAGES["quant_fallback"]
-    )
+    if model_mode:
+        message = _MODEL_MODE_QUANT_FALLBACK_MESSAGE
+    elif (result.get("env") or {}).get("bitsandbytes_installed") is False:
+        # 설치 자체가 안 된 것이 확실할 때만 단정한다(#60). `None`은 "못 읽었다"이므로
+        # 아래 뭉뚱그린 문구로 흘려보낸다 — env.bitsandbytes_installed는 자식이
+        # `find_spec`으로 읽은 값이다(#44).
+        message = _BNB_MISSING_QUANT_FALLBACK_MESSAGE
+    else:
+        message = _REASON_MESSAGES["quant_fallback"]
     return _Line("ℹ", "dim", f"4bit 레이어 폴백    {message}", is_problem=False)
 
 

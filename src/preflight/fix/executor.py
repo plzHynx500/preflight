@@ -148,6 +148,41 @@ _FIX_MAP: dict[str, tuple[str, list[str] | None]] = {
         "bitsandbytes가 CUDA 지원 없이 빌드됨",
         ["-m", "pip", "install", "bitsandbytes", "--upgrade", "--force-reinstall"],
     ),
+    "torch_not_installed": (
+        (
+            "PyTorch가 설치되어 있지 않습니다 — NVIDIA GPU가 감지됐으므로 드라이버에"
+            " 맞는 CUDA 빌드 torch를 설치하면 GPU를 쓸 수 있습니다"
+        ),
+        # 실제 args는 suggest_fix()가 env.gpu_driver_version을 보고 동적으로 만든다
+        # (#82, ADR-0007) — torch_cpu_only_build와 같은 기계를 쓴다. 여기 값은
+        # 자리만 차지하며 쓰이지 않는다.
+        #
+        # 맨몸 `pip install torch`는 CPU 전용 빌드를 설치해 "고쳤다고 생각했는데 여전히
+        # CPU"라는 더 나쁜 상태를 만든다(#55 실측). `--index-url`로 휠을 지정하기
+        # 때문에 그 함정을 피한다.
+        None,
+    ),
+    "torch_not_installed_no_gpu": (
+        (
+            "PyTorch가 설치되어 있지 않고 NVIDIA GPU도 조회되지 않았습니다 —"
+            " GPU 기계라면 드라이버를 먼저 확인하고, 그 뒤"
+            " https://pytorch.org/get-started/locally/ 에서 환경에 맞는 설치 명령을"
+            " 확인하세요"
+        ),
+        # GPU가 보이지 않는 상태에서 2GB가 넘는 CUDA 빌드를 자동으로 받아봐야 달라지는
+        # 게 없다 — torch_cpu_only_build_no_gpu와 같은 판단이다. 안내만 하고 --yes
+        # 대상에서 뺀다.
+        None,
+    ),
+    "transformers_not_installed": (
+        (
+            "transformers가 설치되어 있지 않습니다 — --model 체크는 이 라이브러리로"
+            " 모델 config를 조회하므로 설치해야 진단할 수 있습니다: pip install transformers"
+        ),
+        # torch와 달리 빌드 변종이 없어 명령이 단순하지만, transformers는 torch 버전과
+        # 호환 범위가 얽혀 있어 자동 설치가 기존 환경을 흔들 수 있다. 안내만 한다.
+        None,
+    ),
     "import_crash_general": (
         "PyTorch/CUDA 또는 라이브러리 import 실패 (에러 로그 확인 필요)",
         None,
@@ -273,7 +308,9 @@ def suggest_fix(check_result: dict) -> dict | None:
         return None
 
     message, args = _FIX_MAP.get(cause, _FIX_MAP["unknown"])
-    if cause == "torch_cpu_only_build":
+    if cause in ("torch_cpu_only_build", "torch_not_installed"):
+        # 둘 다 "이 드라이버에 맞는 CUDA 빌드 torch를 받아라"로 귀결된다. 아예 없는
+        # 경우에도 --force-reinstall은 무해하므로 같은 인자를 쓴다(#44).
         env = check_result.get("env") or {}
         tag = _torch_cuda_tag_for_env(env)
         args = _torch_cuda_reinstall_args(tag)

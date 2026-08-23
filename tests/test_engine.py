@@ -302,18 +302,31 @@ _ENV_FIELDS = set(worker.ENV_FIELDS)
 
 
 def test_env_is_supplied_even_when_import_fails(fake_module) -> None:
-    """import가 깨진 환경에서도 `env`가 dict로 온다 — 값은 전부 None이다.
+    """import가 깨진 환경에서도 `env`가 dict로 오고, **설치 여부는 채워져 있다**.
 
-    소비자가 `env`의 유무까지 따로 방어하지 않게 형태만 맞춰 보낸다. 이때 속성을
-    다시 읽으려 들지는 않는다 — 방금 실패한 import를 반복하는 것뿐이다.
+    소비자가 `env`의 유무까지 따로 방어하지 않게 형태를 맞춰 보낸다. import로만
+    읽히는 속성(`torch_version` 등)은 전부 None이다 — 방금 실패한 import를 다시
+    시도하지 않기 때문이다.
+
+    반면 `*_installed`는 `find_spec` 기반이라 import 전에 이미 채워져 있고, 죽는
+    경로에서도 그대로 실려 온다(#44). 그래야 부모가 "아예 없다"와 "있는데 로드가
+    깨졌다"를 가를 수 있다.
     """
     fake_module("torch", 'raise ImportError("libcudart.so.12: cannot open shared object file")')
 
     result = run_canary_check(None, 1, 8)
+    env = result["env"]
 
     assert result["status"] == "import_crash"
-    assert set(result["env"]) == _ENV_FIELDS
-    assert all(value is None for value in result["env"].values()), result["env"]
+    assert set(env) == _ENV_FIELDS
+
+    # import 로만 읽히는 값 — 재시도하지 않으므로 전부 None
+    import_only = ("torch_version", "torch_cuda_version", "bnb_compiled_with_cuda")
+    assert all(env[key] is None for key in import_only), env
+
+    # find_spec 기반 — import 실패와 무관하게 채워진다
+    installed = [f"{name}_installed" for name in worker.CHECKED_LIBRARIES]
+    assert all(env[key] in (True, False) for key in installed), env
 
 
 def test_collect_env_reads_cuda_visible_devices(monkeypatch) -> None:
@@ -354,7 +367,12 @@ def test_env_and_rss_are_populated_on_real_run() -> None:
     env = result["env"]
     assert set(env) == _ENV_FIELDS
     assert env["torch_version"]
-    assert env["bnb_compiled_with_cuda"] in (True, False)
+    # bitsandbytes가 없으면 이 값은 채워질 수 없다 — "GPU가 있다"는 것만으로
+    # bitsandbytes 설치까지 전제하면 안 된다(#109). 설치 여부로 갈라 본다.
+    if env["bitsandbytes_installed"]:
+        assert env["bnb_compiled_with_cuda"] in (True, False)
+    else:
+        assert env["bnb_compiled_with_cuda"] is None
     # 4bit을 시도조차 안 한 경우는 "지원 안 됨"이 아니라 "모름"이라 None으로 남는다.
     if result["quant_backend"] == "bnb-4bit":
         assert env["bnb_cpu_4bit_supported"] in (True, False)
