@@ -187,7 +187,9 @@ def test_build_dummy_model_uses_config_only_no_weights(
 ) -> None:
     from preflight.canary.model import build_dummy_model
 
-    _model, _config, quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    _model, _config, quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
 
     assert fake_transformers["config_model_name"] == "some-org/some-model"
     assert quant_backend == "bnb-4bit"
@@ -213,7 +215,9 @@ def test_build_dummy_model_no_meta_tensors_left_after_materialization(
     """실체화 루프가 끝나면 meta 디바이스에 남은 파라미터가 하나도 없어야 한다."""
     from preflight.canary.model import build_dummy_model
 
-    model, _config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    model, _config, _quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
 
     meta_params = [name for name, p in model.named_parameters() if p.device.type == "meta"]
     assert meta_params == []
@@ -225,7 +229,9 @@ def test_build_dummy_model_freezes_base_and_trains_only_lora(
     """베이스(Linear4bit 가중치)는 얼리고, LoRA 어댑터(lora_down/lora_up)만 학습 대상이다."""
     from preflight.canary.model import build_dummy_model
 
-    model, _config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    model, _config, _quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
 
     trainable = {name for name, p in model.named_parameters() if p.requires_grad}
     frozen = {name for name, p in model.named_parameters() if not p.requires_grad}
@@ -245,7 +251,9 @@ def test_build_dummy_model_lora_hook_actually_changes_output_and_gets_gradient(
     """
     from preflight.canary.model import build_dummy_model
 
-    model, _config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    model, _config, _quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
     # 실체화 루프가 항상 float16으로 만들기 때문에(compute_dtype=torch.float16과
     # 일치시키기 위함) 입력도 맞춰준다 — 실제 파이프라인에서는 임베딩 레이어 출력이
     # 이미 float16이라 자연히 맞는다.
@@ -277,7 +285,9 @@ def test_build_dummy_model_falls_back_to_fp32_when_bitsandbytes_missing(
 
     from preflight.canary.model import build_dummy_model
 
-    _model, _config, quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    _model, _config, quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
 
     assert quant_backend == "nn-linear-fallback"
 
@@ -299,7 +309,9 @@ def test_build_dummy_model_fallback_moves_model_to_requested_device(
 
     from preflight.canary.model import build_dummy_model
 
-    model, _config, quant_backend = build_dummy_model("some-org/some-model", device="meta")
+    model, _config, quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="meta"
+    )
 
     assert quant_backend == "nn-linear-fallback"
     param_devices = {param.device.type for param in model.parameters()}
@@ -325,7 +337,9 @@ def test_build_dummy_model_fallback_freezes_base_and_trains_only_lora(
 
     from preflight.canary.model import build_dummy_model
 
-    model, _config, quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    model, _config, quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
 
     assert quant_backend == "nn-linear-fallback"
     trainable = {name for name, p in model.named_parameters() if p.requires_grad}
@@ -348,7 +362,9 @@ def test_build_dummy_model_fallback_skips_lm_head_like_the_4bit_path(
 
     from preflight.canary.model import build_dummy_model
 
-    model, _config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    model, _config, _quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
 
     names = dict(model.named_parameters())
     assert "lm_head.lora_down.weight" not in names
@@ -367,7 +383,9 @@ def test_build_dummy_model_fallback_lora_hook_changes_output_and_gets_gradient(
 
     from preflight.canary.model import build_dummy_model
 
-    model, _config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    model, _config, _quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
     # 폴백 모델은 dtype 지정 없이 from_config로 만들어져 float32다 — 어댑터도 베이스
     # weight의 dtype을 따라가므로 입력만 맞춰주면 된다.
     dummy_input = torch.randn(2, 8)
@@ -466,7 +484,9 @@ def test_base_layer_device_finds_frozen_base_on_fallback_model(
     from preflight.canary.model import build_dummy_model
     from preflight.canary.worker import _base_layer_device
 
-    model, _config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    model, _config, _quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
 
     frozen = [p for p in model.parameters() if not p.requires_grad]
     assert frozen, "폴백 모델에 얼린 베이스가 있어야 한다"
@@ -489,7 +509,9 @@ def test_build_dummy_model_and_input_are_compatible(fake_transformers, fake_bits
     """build_dummy_model이 돌려준 config.vocab_size로 build_dummy_input을 바로 쓸 수 있다."""
     from preflight.canary.model import build_dummy_input, build_dummy_model
 
-    _model, config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    _model, config, _quant_backend, _fallback_reason = build_dummy_model(
+        "some-org/some-model", device="cpu"
+    )
     input_ids = build_dummy_input(
         batch_size=1, seq_len=4, vocab_size=config.vocab_size, device="cpu"
     )
@@ -516,7 +538,7 @@ def test_model_path_actually_applies_4bit_with_real_libraries() -> None:
     """
     from preflight.canary.model import build_dummy_model
 
-    model, _config, quant_backend = build_dummy_model(
+    model, _config, quant_backend, _fallback_reason = build_dummy_model(
         "hf-internal-testing/tiny-random-LlamaForCausalLM", device="cuda"
     )
 
@@ -676,7 +698,7 @@ def test_no_meta_buffers_remain_after_materialization(fake_transformers, fake_bi
     """
     from preflight.canary.model import build_dummy_model
 
-    model, _config, _backend = build_dummy_model("dummy/model", device="cpu")
+    model, _config, _backend, _fallback_reason = build_dummy_model("dummy/model", device="cpu")
 
     left_on_meta = [name for name, buf in model.named_buffers() if buf.device.type == "meta"]
 
@@ -693,7 +715,7 @@ def test_materialized_buffer_keeps_shape_dtype_and_persistence(
     """
     from preflight.canary.model import build_dummy_model
 
-    model, _config, _backend = build_dummy_model("dummy/model", device="cpu")
+    model, _config, _backend, _fallback_reason = build_dummy_model("dummy/model", device="cpu")
 
     buf = model.get_buffer("inv_freq")
 
@@ -714,8 +736,54 @@ def test_forward_runs_after_materialization(fake_transformers, fake_bitsandbytes
     """
     from preflight.canary.model import build_dummy_model
 
-    model, _config, _backend = build_dummy_model("dummy/model", device="cpu")
+    model, _config, _backend, _fallback_reason = build_dummy_model("dummy/model", device="cpu")
 
     # dtype을 모델에 맞춘다 — from_config(dtype=float16)로 만들어진다.
     weight = next(model.parameters())
     model(torch.randn(1, 8, dtype=weight.dtype))
+
+
+# --- 폴백 사유 (#147) ---
+
+
+def test_try_build_4bit_linear_reports_reason_when_bnb_missing(monkeypatch) -> None:
+    """4bit 레이어를 못 만들면 **그 예외**를 사유로 함께 돌려준다 (#147).
+
+    예전에는 `except Exception`이 예외를 통째로 삼켜 `None`만 돌려줬다. 폴백했다는
+    사실만 남고 이유는 어디에도 없어, 우리 코드의 버그(#134)가 그 안에 가려졌다.
+    """
+    from preflight.canary.model import _try_build_4bit_linear
+
+    _remove_module(monkeypatch, "bitsandbytes")
+
+    layer, reason = _try_build_4bit_linear(8, torch.float32)
+
+    assert layer is None
+    assert reason.startswith("ModuleNotFoundError")
+
+
+def test_minimal_model_carries_fallback_reason(monkeypatch) -> None:
+    """기본 체크 모델이 그 사유를 그대로 위로 올린다 (#147)."""
+    from preflight.canary.model import QUANT_BACKEND_FALLBACK, build_minimal_canary_model
+
+    _remove_module(monkeypatch, "bitsandbytes")
+
+    _model, quant_backend, reason = build_minimal_canary_model(
+        "cpu", torch.float32, prefer_4bit=True
+    )
+
+    assert quant_backend == QUANT_BACKEND_FALLBACK
+    assert reason.startswith("ModuleNotFoundError")
+
+
+def test_minimal_model_has_no_reason_when_4bit_not_attempted() -> None:
+    """`prefer_4bit=False`는 일부러 안 쓴 것이라 사유가 없다 (#147).
+
+    CPU 기준선 재시도가 이 경로다 — 실패한 적이 없으니 설명할 것도 없다. 사유를
+    남기면 화면에 "왜 폴백했나"가 거짓으로 붙는다.
+    """
+    from preflight.canary.model import build_minimal_canary_model
+
+    _model, _backend, reason = build_minimal_canary_model("cpu", torch.float32, prefer_4bit=False)
+
+    assert reason is None

@@ -1440,3 +1440,107 @@ def test_render_report_notice_command_stays_one_line(capsys, monkeypatch) -> Non
     render_report([judge_result(_OK_RAW)], notices=[notice])
 
     assert notice in capsys.readouterr().out
+
+
+def test_render_report_fallback_shows_reason(capsys) -> None:
+    """폴백 줄이 **왜 폴백했는지**를 detail로 보여준다 (#147).
+
+    예전에는 `_build_qlora_model`의 `except Exception`이 예외를 통째로 삼켜서,
+    우리 코드의 버그(#134)까지 화면에는 "4bit 레이어 구성 실패 → 폴백"으로만
+    보였다. 읽는 사람은 "이 환경이 4bit을 못 쓰는구나"로 받아들일 뿐, 도구 자신의
+    결함을 의심할 단서가 없었다.
+    """
+    raw = {
+        **_OK_RAW,
+        "quant_backend": "nn-linear-fallback",
+        "quant_fallback_reason": "NotImplementedError: Cannot copy out of meta tensor; no data!",
+        "env": {"bitsandbytes_installed": True},
+    }
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "4bit 레이어 폴백" in out
+    assert "Cannot copy out of meta tensor" in out
+
+
+def test_render_report_fallback_reason_hidden_when_bnb_known_missing(capsys) -> None:
+    """bnb 미설치가 확정인 기본 체크에서는 사유를 붙이지 않는다 (#147).
+
+    같은 화면의 `⚠ 4bit 사용 불가` 줄이 이미 원인을 말한다(#117). 여기에
+    `ModuleNotFoundError`까지 붙이면 #142에서 막 없앤 원인 중복이 형태만 바꿔
+    되살아난다.
+    """
+    raw = {
+        **_OK_RAW,
+        "quant_backend": "nn-linear-fallback",
+        "quant_fallback_reason": "ModuleNotFoundError: No module named 'bitsandbytes'",
+        "env": {"bitsandbytes_installed": False},
+    }
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "4bit 레이어 폴백" in out
+    assert "ModuleNotFoundError" not in out
+    # 원인은 ⚠ 줄에서 딱 한 번만 나온다.
+    assert out.count("bitsandbytes가 없어") == 1
+
+
+def test_render_report_model_mode_fallback_shows_reason_even_if_bnb_missing(capsys) -> None:
+    """--model 블록에는 ⚠ 줄이 없으므로 사유를 항상 보여준다 (#147).
+
+    설치 여부 줄은 기본 체크 한 곳에서만 그린다(#117). 모델 블록에서 사유까지
+    감추면 아무도 말해주지 않는 상태가 된다 — #134가 숨어 있던 자리가 거기다.
+    """
+    raw = {
+        **_MODEL_MODE_RAW,
+        "model_name": "meta-llama/Llama-3.1-8B",
+        "quant_backend": "nn-linear-fallback",
+        "quant_fallback_reason": "ModuleNotFoundError: No module named 'bitsandbytes'",
+        "env": {"bitsandbytes_installed": False},
+    }
+
+    render_report([judge_result(raw)])
+
+    assert "ModuleNotFoundError" in capsys.readouterr().out
+
+
+def test_render_report_fallback_without_reason_adds_no_line(capsys) -> None:
+    """사유가 없으면(구버전 페이로드) 지금까지의 화면 그대로다 (#147)."""
+    raw = {**_OK_RAW, "quant_backend": "nn-linear-fallback", "env": {}}
+
+    render_report([judge_result(raw)])
+    without = capsys.readouterr().out
+    render_report([judge_result({**raw, "quant_fallback_reason": "RuntimeError: boom"})])
+    with_reason = capsys.readouterr().out
+
+    assert "4bit 레이어 폴백" in without
+    assert "RuntimeError: boom" not in without
+    assert "RuntimeError: boom" in with_reason
+    # 사유 줄 하나만 늘어난다 — 다른 줄 구성은 건드리지 않는다.
+    assert len(with_reason.splitlines()) == len(without.splitlines()) + 1
+
+
+def test_render_report_fallback_reason_is_capped(capsys) -> None:
+    """긴 폴백 사유는 화면에서 잘린다 (#147, 상영님 리뷰).
+
+    detail 줄은 `overflow="fold"`라 잘리지 않고 통째로 접힌다 — HF Hub의 401 체인이나
+    bitsandbytes의 CUDA 진단 블록이 그대로 오면 화면을 덮는다. `error_log`가 같은
+    `"<예외 종류>: <메시지>"` 형식인데 200자 예산을 지키는 것과 어긋났다.
+    `--json`의 원본은 그대로다 — 자르는 것은 화면뿐이다.
+    """
+    reason = "RuntimeError: " + "가" * 500
+    raw = {
+        **_OK_RAW,
+        "quant_backend": "nn-linear-fallback",
+        "quant_fallback_reason": reason,
+        "env": {"bitsandbytes_installed": True},
+    }
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "RuntimeError" in out
+    assert reason not in out
+    assert "…" in out

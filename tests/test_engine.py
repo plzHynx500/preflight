@@ -25,6 +25,7 @@ _OK_PAYLOAD = {
     "elapsed_ms": 12.3,
     "cpu_multiplier": 41.0,
     "quant_backend": "bnb-4bit",
+    "quant_fallback_reason": None,
     "error_log": None,
     "env": {
         "torch_version": "2.11.0+cu128",
@@ -659,7 +660,9 @@ def test_model_check_fills_env_in_place_before_the_canary_runs() -> None:
     fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False))
 
     with (
-        mock.patch.object(worker, "build_dummy_model", return_value=(object(), config, "bnb-4bit")),
+        mock.patch.object(
+            worker, "build_dummy_model", return_value=(object(), config, "bnb-4bit", None)
+        ),
         mock.patch("preflight.canary.model.build_dummy_input", return_value=object()),
         mock.patch.object(worker, "_execute_canary_cycle", side_effect=RuntimeError("boom")),
         pytest.raises(RuntimeError),
