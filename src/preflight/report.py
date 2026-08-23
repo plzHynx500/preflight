@@ -559,7 +559,12 @@ def _render_fix_block(console: Console, result: dict) -> None:
         console.print("재확인: preflight check --yes")
     else:
         message = fix.get("message", "")
-        console.print(f"안내: {message}")
+        # 위 FIX: 줄과 같은 이유로 soft_wrap이 필요하다. `fix_command`가 없는
+        # cause가 훨씬 많고(_FIX_MAP의 대부분), 그중 일부는 **메시지 본문에
+        # 실행 가능한 pip 명령이 박혀 있다**(torch_cpu_only_build_no_gpu 등).
+        # 여기에 개행이 끼면 복사한 명령이 --index-url과 값으로 쪼개져 실패한다 —
+        # #91이 FIX: 줄만 고치고 이 분기를 놓쳤다.
+        console.print(f"안내: {message}", soft_wrap=True)
 
 
 def _group_label(result: dict) -> str:
@@ -570,7 +575,15 @@ def _group_label(result: dict) -> str:
     순서 추론은 결과가 하나뿐인 경우에는 아예 정보가 없고, 여럿이라도 실행
     순서가 바뀌면 깨진다).
     """
-    label = f"모델 체크: {result['model_name']}" if _is_model_mode(result) else "기본 체크"
+    # model_name은 --model로 받은 사용자 입력이라 개행이 섞일 수 있다(스크립트로
+    # 조립하거나 파일에서 읽는 경우). 그대로 두면 표제 아래에 임의의 줄이 끼어들어
+    # 판정 줄처럼 보인다(#127) — escape()는 rich 마크업만 막고 개행은 막지 않는다.
+    # split()/join으로 개행·탭·연속 공백을 한 번에 정리한다.
+    label = (
+        f"모델 체크: {' '.join(str(result['model_name']).split())}"
+        if _is_model_mode(result)
+        else "기본 체크"
+    )
     if result.get("reverified"):
         # --yes로 수정을 실행한 뒤 다시 측정한 블록이다. 표시가 없으면 1차 실행
         # 결과와 구별되지 않아, 사용자는 화면의 ✔이 수정 덕분인지 원래 그랬는지
