@@ -1422,3 +1422,21 @@ def test_render_report_reverified_delta_survives_failed_status(capsys) -> None:
     out = capsys.readouterr().out
     assert "수정 전" in out
     assert "(변화 없음)" in out
+
+
+def test_render_report_notice_command_stays_one_line(capsys, monkeypatch) -> None:
+    """알림에 실린 명령에도 실제 개행이 끼면 안 된다 (#149).
+
+    `자동 수정 실행: <command>`처럼 알림에는 거의 항상 명령이 들어간다. rich 기본값은
+    폭에 맞춰 문자열 자체에 개행을 끼워 넣어, 복사하면 --index-url과 값이 분리된다.
+    #91(FIX:)·#128(안내:)과 같은 버그의 세 번째 경로였다.
+    """
+    monkeypatch.setenv("COLUMNS", "40")
+    notice = (
+        "자동 수정 실행: C:/venv/Scripts/python.exe -m pip install --force-reinstall "
+        "torch --index-url https://download.pytorch.org/whl/cu130"
+    )
+
+    render_report([judge_result(_OK_RAW)], notices=[notice])
+
+    assert notice in capsys.readouterr().out
