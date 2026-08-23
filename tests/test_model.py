@@ -787,3 +787,127 @@ def test_minimal_model_has_no_reason_when_4bit_not_attempted() -> None:
     _model, _backend, reason = build_minimal_canary_model("cpu", torch.float32, prefer_4bit=False)
 
     assert reason is None
+
+
+# --- config 해석과 실패 안내 (#154) ---
+
+
+class _FlatConfig:
+    vocab_size = 32000
+
+
+class _TextConfig:
+    vocab_size = 262144
+
+
+class _UnifiedConfig:
+    """`Gemma4UnifiedConfig`·`Qwen3_5Config`처럼 텍스트 설정을 아래로 내린 config.
+
+    **하위 config를 속성으로 노출하지 않는다** — 그래야 이 테스트가 하위 이름
+    폴백이 아니라 `get_text_config()` 경로를 실제로 검증한다. 통합 config는 이름이
+    모델마다 달라서(text_config·llm_config·…) 공식 API가 유일하게 믿을 수 있는 길이다.
+    """
+
+    def get_text_config(self):
+        return _TextConfig()
+
+
+class _NestedOnlyConfig:
+    """`get_text_config()`가 없는 옛 transformers를 흉내 낸다."""
+
+    text_config = _TextConfig()
+
+
+class _VisionOnlyConfig:
+    """토큰 입력이 없는 모델 — 이 canary의 대상이 아니다."""
+
+
+def test_resolve_vocab_size_reads_flat_config() -> None:
+    """평범한 텍스트 LLM은 최상위 vocab_size를 그대로 쓴다 (#154)."""
+    from preflight.canary.model import resolve_vocab_size
+
+    assert resolve_vocab_size(_FlatConfig()) == 32000
+
+
+def test_resolve_vocab_size_uses_official_text_config_api() -> None:
+    """통합 config는 `get_text_config()`로 텍스트 부분을 얻는다 (#154).
+
+    예전에는 `config.vocab_size`를 그냥 읽어서 `Gemma4UnifiedConfig`·`Qwen3_5Config`가
+    `AttributeError`로 터졌고, 화면에는 "원인 미상 오류 (모델명 오타 등)"이 나갔다 —
+    오타가 아닌데 사용자를 오타 찾기로 보냈다(상영님 실측).
+    """
+    from preflight.canary.model import resolve_vocab_size
+
+    assert resolve_vocab_size(_UnifiedConfig()) == 262144
+
+
+def test_resolve_vocab_size_falls_back_to_known_subconfig_names() -> None:
+    """`get_text_config()`가 없는 버전에서도 알려진 하위 이름으로 찾는다 (#154)."""
+    from preflight.canary.model import resolve_vocab_size
+
+    assert resolve_vocab_size(_NestedOnlyConfig()) == 262144
+
+
+def test_resolve_vocab_size_says_why_it_cannot_diagnose() -> None:
+    """끝내 못 찾으면 **왜 못 하는지**를 말한다 (#154).
+
+    이 canary는 토큰 ID를 입력으로 넣는 텍스트 LLM 전제라, 순수 비전·오디오 모델은
+    진단 대상이 아니다. `ModelConfigError`는 `_KNOWN_ERROR_CLASSES`라 이 메시지가
+    화면의 표제가 된다(#83).
+    """
+    from preflight.canary.model import ModelConfigError, resolve_vocab_size
+
+    with pytest.raises(ModelConfigError) as excinfo:
+        resolve_vocab_size(_VisionOnlyConfig())
+
+    message = str(excinfo.value)
+    assert "vocab_size" in message
+    assert "텍스트 LLM" in message
+    # 어떤 config였는지 남겨야 사용자가 자기 모델을 알아본다.
+    assert "_VisionOnlyConfig" in message
+
+
+def test_config_error_message_catches_gated_repo_wrapped_in_oserror() -> None:
+    """gated repo가 `OSError`로 감싸여 와도 잡는다 (#154).
+
+    타입만 보면 놓친다 — transformers가 `GatedRepoError`를 잡아 `OSError`로 다시
+    던지는 경로가 있어 `__mro__`에 원래 타입이 남지 않는다. 실제로 gated 모델이
+    "원인 미상 오류(모델명 오타 등)"로 나갔다.
+    """
+    from preflight.canary.model import _config_error_message
+
+    message = _config_error_message(
+        "org/gated-model", OSError("You are trying to access a gated repo.")
+    )
+
+    assert message is not None
+    assert "접근이 제한된 모델" in message
+    assert "org/gated-model" in message
+
+
+def test_config_error_message_explains_unrecognized_architecture() -> None:
+    """설치된 transformers가 모르는 아키텍처를 전용 문구로 안내한다 (#154).
+
+    예외 본문에 조치(`pip install --upgrade transformers`)가 이미 적혀 있는데
+    화면에는 "오타 등"으로만 나갔다. model_type을 그대로 인용해 사용자가 자기
+    모델을 알아볼 수 있게 한다.
+    """
+    from preflight.canary.model import _config_error_message
+
+    raw = (
+        "The checkpoint you are trying to load has model type `minimax_music3` "
+        "but Transformers does not recognize this architecture."
+    )
+
+    message = _config_error_message("MiniMaxAI/MiniMax-Music3", ValueError(raw))
+
+    assert message is not None
+    assert "minimax_music3" in message
+    assert "transformers" in message
+
+
+def test_config_error_message_leaves_unknown_failures_alone() -> None:
+    """모르는 실패는 건드리지 않는다 — 오타로 단정하던 것이 #62의 버그였다."""
+    from preflight.canary.model import _config_error_message
+
+    assert _config_error_message("org/model", RuntimeError("무언가 다른 실패")) is None

@@ -9,6 +9,8 @@ torch/transformers import는 반드시 함수 안에서 한다 — 모듈 최상
 
 from __future__ import annotations
 
+import re
+
 # 기본 체크용 최소 대표 구조의 크기 (docs/architecture.md §3 "기본 체크").
 # 특정 모델을 재현하는 것이 목적이 아니라 GPU/드라이버/CUDA 체인이 물리적으로
 # 살아있는지만 보므로, 임베딩·attention 없이 4bit 레이어와 어댑터만 둔다.
@@ -138,10 +140,23 @@ def _config_error_message(model_name: str, exc: Exception) -> str | None:
     names = {base.__name__ for base in type(exc).__mro__}
     text = str(exc)
 
-    if "GatedRepoError" in names:
+    # 타입만 보면 놓친다 — transformers가 `GatedRepoError`를 잡아 `OSError`로 다시
+    # 던지는 경로가 있어(`raise OSError(...) from e`) `__mro__`에 원래 타입이 남지
+    # 않는다. 실제로 gated 모델이 "원인 미상 오류(모델명 오타 등)"로 나갔다(#154).
+    if "GatedRepoError" in names or "gated repo" in text.lower():
         return (
             f"접근이 제한된 모델: {model_name}"
             " (HF Hub에서 라이선스 동의 또는 접근 권한이 필요하다 — hf auth login)"
+        )
+    # 설치된 transformers가 모르는 아키텍처. 예외 본문에 조치(`pip install --upgrade
+    # transformers`)가 이미 적혀 있는데 화면에는 "오타 등"으로만 나갔다(#154).
+    if "does not recognize this architecture" in text:
+        model_type = _quoted_model_type(text)
+        detail = f"model_type={model_type}" if model_type else "model_type 미상"
+        return (
+            f"설치된 transformers가 모르는 모델 구조: {model_name} ({detail})"
+            " — transformers를 올리거나(pip install --upgrade transformers),"
+            " 아주 새 모델이면 아직 지원 릴리스가 없을 수 있다"
         )
     if "RepositoryNotFoundError" in names or "is not a valid model identifier" in text:
         return (
@@ -160,6 +175,61 @@ def _config_error_message(model_name: str, exc: Exception) -> str | None:
             " (config.json을 받지 못했다 — 연결 확인 후 다시 실행)"
         )
     return None
+
+
+def _quoted_model_type(text: str) -> str | None:
+    """transformers 메시지에서 백틱으로 감싼 model_type을 뽑는다 (#154).
+
+    "has model type `minimax_music3` but Transformers does not recognize ..."
+    형태다. 못 찾으면 None — 문구가 바뀌어도 안내 자체는 나가야 한다.
+    """
+    match = re.search(r"model type `([^`]+)`", text)
+    return match.group(1) if match else None
+
+
+#: `vocab_size`가 최상위에 없을 때 훑어볼 하위 config 이름들 (#154).
+#: 멀티모달·통합 config가 텍스트 설정을 아래로 내리면서 이름이 제각각이다.
+_TEXT_CONFIG_ATTRS = ("text_config", "llm_config", "language_model", "decoder")
+
+
+def resolve_vocab_size(config) -> int:
+    """더미 토큰 ID를 만들 때 쓸 `vocab_size`를 찾는다 (#154).
+
+    예전에는 `config.vocab_size`를 그냥 읽었다. 요즘 주력 모델들이 텍스트 설정을
+    하위 config로 내리면서(`Gemma4UnifiedConfig`·`Qwen3_5Config` 등 통합 config)
+    최상위에 `vocab_size`가 없고, 그대로 `AttributeError`로 터져 화면에는
+    "원인 미상 오류 (모델명 오타 등)"이 나갔다 — 오타가 아닌데 오타를 찾게 만든다.
+
+    **`get_text_config()`를 먼저 쓴다.** transformers가 "이 config의 텍스트 부분"을
+    돌려주려고 둔 공식 API라, 하위 config 이름이 모델마다 달라도 여기서 흡수된다.
+    없거나 실패하는 버전을 위해 최상위 → 알려진 하위 이름 순으로 물러선다.
+
+    끝내 못 찾으면 `ModelConfigError`로 **왜 못 하는지**를 말한다. 이 canary는 토큰
+    ID를 입력으로 넣는 텍스트 LLM 전제라(architecture.md §6-01), 순수 비전·오디오
+    모델은 진단 대상이 아니다.
+    """
+    getter = getattr(config, "get_text_config", None)
+    if callable(getter):
+        try:
+            size = getattr(getter(), "vocab_size", None)
+        except Exception:  # noqa: BLE001 - 공식 API가 없거나 깨진 버전은 아래로 물러선다
+            size = None
+        if size:
+            return size
+
+    size = getattr(config, "vocab_size", None)
+    if size:
+        return size
+
+    for attr in _TEXT_CONFIG_ATTRS:
+        size = getattr(getattr(config, attr, None), "vocab_size", None)
+        if size:
+            return size
+
+    raise ModelConfigError(
+        f"이 모델의 config에서 vocab_size를 찾지 못했다 ({type(config).__name__})"
+        " — 토큰 입력을 받는 텍스트 LLM만 모델 체크를 할 수 있다"
+    )
 
 
 def _build_qlora_model(config, device: str):

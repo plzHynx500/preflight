@@ -455,6 +455,7 @@ def _max_position_len(config) -> int | None:
 
 def _run_model_check(torch, model_name: str, batch_size: int, seq_len: int, env: dict) -> dict:
     from preflight.canary.model import build_dummy_input as build_hf_dummy_input
+    from preflight.canary.model import resolve_vocab_size
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -463,7 +464,7 @@ def _run_model_check(torch, model_name: str, batch_size: int, seq_len: int, env:
     # 그걸 원인으로 특정하려면 이 값이 실패 결과에 실려 있어야 한다. `env`는
     # main()이 준 것과 같은 dict라 여기서 채우면 예외 경로의 기록에도 그대로 남는다.
     env["model_max_position"] = _max_position_len(config)
-    dummy_input = build_hf_dummy_input(batch_size, seq_len, config.vocab_size, device)
+    dummy_input = build_hf_dummy_input(batch_size, seq_len, resolve_vocab_size(config), device)
 
     measured = _execute_canary_cycle(
         torch, model, dummy_input, device, quant_backend, quant_fallback_reason
