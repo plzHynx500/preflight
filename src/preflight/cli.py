@@ -238,8 +238,6 @@ def check(
     fix = fix_target.get("fix") if fix_target else None
 
     notices: list[str] = []
-    if _model_check_ran(results):
-        notices.append(_VANILLA_PATH_NOTICE)
     if yes and fix:
         command = fix.get("fix_command")
         if not fix.get("fix_argv"):
@@ -334,6 +332,14 @@ def check(
                             f"({model_name})를 이어서 실행했다"
                         )
                         verdict = _aggregate_verdict(results)
+
+    # **`results`가 최종 확정된 뒤에 판단한다.** `--yes`로 기본 체크를 고치면
+    # 생략됐던 모델 체크를 이어서 실행하는 경로가 있어(#84), 앞에서 판단하면
+    # 그때 실제로 돈 모델 체크에는 안내가 빠진다 — VRAM 부족 FAIL을 보여주면서
+    # 그게 vanilla 기준이라는 걸 안 알려주는, 이 안내가 막으려던 바로 그 상황이
+    # 그 경로에만 남는다(#118, PR 리뷰에서 성오님 지적).
+    if _model_check_ran(results):
+        notices.append(_VANILLA_PATH_NOTICE)
 
     elapsed_seconds = time.perf_counter() - start_time
     render_report(

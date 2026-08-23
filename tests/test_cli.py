@@ -725,3 +725,42 @@ def test_skipped_model_check_does_not_note_vanilla_path() -> None:
     notices = _render_with([basic_fail], ["check", "--model", "dummy/model"])
 
     assert not any("vanilla" in notice for notice in notices), notices
+
+
+def test_vanilla_notice_survives_the_yes_reverify_path() -> None:
+    """`--yes` 로 되살아난 모델 체크에도 vanilla 안내가 붙는다 (#118, PR #129 리뷰).
+
+    **판단 시점이 문제였다.** 기본 체크 FAIL → `--yes` 로 수정 → 생략됐던 모델 체크를
+    이어서 실행하는 경로(#84)에서는 `results` 가 나중에 채워진다. 안내 여부를 앞에서
+    정하면 그때 실제로 돈 모델 체크에는 안내가 빠져서, **VRAM 부족 FAIL 을 보여주면서
+    그게 vanilla 기준이라는 걸 안 알려주는** — 이 안내가 막으려던 바로 그 상황이 이
+    경로에만 남는다.
+
+    기존 세 테스트는 `--yes` 를 안 써서 이 구멍을 못 봤다.
+    """
+    raw_basic = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA error"}
+    basic_initial = {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["import_crash"],
+        "error_log": "libbitsandbytes_cpu.so: CUDA error",
+    }
+    reverified = {"status": "ok", "device": "cuda", "verdict": "PASS", "reasons": []}
+    model_res = {"status": "oom", "device": "cuda", "verdict": "FAIL", "reasons": ["status_oom"]}
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", side_effect=[raw_basic, {"status": "oom"}]),
+        patch("preflight.cli.judge_result", side_effect=[basic_initial, model_res]),
+        patch("preflight.cli.apply_fix"),
+        patch("preflight.cli.reverify", return_value=reverified),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        runner.invoke(app, ["check", "--model", "dummy/model", "--yes"])
+
+    results = mock_render.call_args.args[0]
+    notices = mock_render.call_args.kwargs["notices"]
+
+    # 모델 체크가 실제로 되살아났는지 먼저 확인 — 아니면 이 테스트가 의미 없다.
+    assert "skipped" not in results[1], results[1]
+    assert any("vanilla" in notice for notice in notices), notices
