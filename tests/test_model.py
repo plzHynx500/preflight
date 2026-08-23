@@ -101,9 +101,20 @@ class _TinyMetaModel(nn.Module):
         self.layer1 = nn.Linear(8, 8, bias=False)
         self.layer2 = nn.Linear(8, 8, bias=False)
         self.lm_head = nn.Linear(8, 16, bias=False)
+        # 실물 RoPE의 `inv_freq`와 같은 성질의 버퍼 — 학습 대상이 아니고
+        # persistent=False다. `with torch.device("meta")` 안에서 만들어지면
+        # 파라미터와 똑같이 meta로 가는데, 실체화 루프가 파라미터만 훑으면
+        # 여기 남아 forward에서 죽는다(#134).
+        self.register_buffer("inv_freq", torch.ones(8), persistent=False)
 
     def forward(self, x):
-        return self.lm_head(self.layer2(self.layer1(x)))
+        # 버퍼를 실제로 쓴다 — 안 쓰면 meta로 남아 있어도 forward가 통과해버려
+        # #134가 또 샌다. **더하기**인 것은 실물을 흉내 낸 것이다: 실체화 값이 0일 때
+        # RoPE는 `cos=1, sin=0`이라 항등이 되는데, 곱하기로 쓰면 입력이 통째로
+        # 0이 돼 다른 테스트(LoRA 훅이 출력을 바꾸는지)까지 무의미해진다.
+        # `.to(x.dtype)`도 실물과 같다 — 실제 `inv_freq`는 float32인데 모델은
+        # float16이라, RoPE가 쓰는 쪽에서 맞춰준다.
+        return self.lm_head(self.layer2(self.layer1(x + self.inv_freq.to(x.dtype))))
 
 
 @pytest.fixture
@@ -513,6 +524,15 @@ def test_model_path_actually_applies_4bit_with_real_libraries() -> None:
 
     import bitsandbytes as bnb
 
+    # **모델 생성만 확인하면 안 된다.** #134는 여기까지 통과하고 forward에서 죽었다 —
+    # RoPE의 inv_freq 버퍼가 meta로 남아 있었는데 이 테스트는 그걸 못 봤다.
+    assert not [name for name, buf in model.named_buffers() if buf.device.type == "meta"]
+
+    from preflight.canary.model import build_dummy_input
+
+    dummy = build_dummy_input(1, 8, _config.vocab_size, "cuda")
+    model(dummy)  # 죽지 않으면 성공 — 값은 보지 않는다(가중치가 랜덤이다)
+
     linear4bit_count = sum(1 for m in model.modules() if isinstance(m, bnb.nn.Linear4bit))
     assert linear4bit_count > 0, "Linear4bit 레이어가 하나도 없다 — 양자화가 실제로 안 걸린 것"
 
@@ -638,3 +658,64 @@ def test_build_dummy_model_surfaces_config_error(fake_bitsandbytes, monkeypatch)
 
     with pytest.raises(ModelConfigError):
         build_dummy_model("this-org-does-not-exist/definitely-not-a-model", device="cpu")
+
+
+# --- meta 버퍼 실체화 (#134) ---
+
+
+def test_no_meta_buffers_remain_after_materialization(fake_transformers, fake_bitsandbytes) -> None:
+    """실체화 후 meta로 남은 **버퍼**가 없어야 한다 (#134).
+
+    `with torch.device("meta")`는 그 블록에서 만들어지는 **모든** 텐서를 meta로
+    보낸다 — 파라미터와 버퍼를 구분하지 않는다. 그런데 실체화 루프가 파라미터만
+    훑고 있어서, RoPE 계열(Llama·Mistral·Qwen)의 `inv_freq` 버퍼가 껍데기로 남아
+    `--model`이 통째로 실패했다.
+
+    이 테스트는 **GPU도 실물 라이브러리도 없이** 돈다 — 같은 경로를 검증하던
+    `@pytest.mark.network` 테스트는 CI에서 아예 실행되지 않아 이 버그를 못 잡았다.
+    """
+    from preflight.canary.model import build_dummy_model
+
+    model, _config, _backend = build_dummy_model("dummy/model", device="cpu")
+
+    left_on_meta = [name for name, buf in model.named_buffers() if buf.device.type == "meta"]
+
+    assert left_on_meta == [], left_on_meta
+
+
+def test_materialized_buffer_keeps_shape_dtype_and_persistence(
+    fake_transformers, fake_bitsandbytes
+) -> None:
+    """실체화한 버퍼가 원래 모양·자료형·persistent 여부를 유지한다 (#134).
+
+    값은 0으로 채운다 — VRAM은 값이 아니라 모양·자료형으로 정해지므로 측정에 영향이
+    없다. 반면 persistent 여부가 바뀌면 `state_dict` 구성이 달라져 의미가 있다.
+    """
+    from preflight.canary.model import build_dummy_model
+
+    model, _config, _backend = build_dummy_model("dummy/model", device="cpu")
+
+    buf = model.get_buffer("inv_freq")
+
+    assert buf.shape == (8,)
+    assert buf.device.type == "cpu"
+    # 실물 `inv_freq`는 모델이 float16이어도 float32다. `torch.zeros(..., dtype=buf.dtype)`가
+    # 원래 자료형을 지키는 것이 이 수정의 일부라, 그걸 고정한다.
+    assert buf.dtype == torch.float32
+    # persistent=False로 등록했으므로 state_dict에 나오면 안 된다.
+    assert "inv_freq" not in model.state_dict()
+
+
+def test_forward_runs_after_materialization(fake_transformers, fake_bitsandbytes) -> None:
+    """실체화한 모델로 forward가 실제로 돈다 (#134).
+
+    **이 단정이 이 이슈의 핵심이다.** 기존 테스트는 `Linear4bit` 개수만 세고 forward를
+    돌리지 않아, 모델은 만들어지는데 돌리면 죽는 상태를 통과시켰다.
+    """
+    from preflight.canary.model import build_dummy_model
+
+    model, _config, _backend = build_dummy_model("dummy/model", device="cpu")
+
+    # dtype을 모델에 맞춘다 — from_config(dtype=float16)로 만들어진다.
+    weight = next(model.parameters())
+    model(torch.randn(1, 8, dtype=weight.dtype))
