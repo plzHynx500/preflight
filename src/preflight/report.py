@@ -714,7 +714,12 @@ def _render_text(results: list[dict], elapsed_seconds: float | None, notices: li
     if notices:
         console.print()
         for notice in notices:
-            console.print(escape(notice))
+            # soft_wrap=True: 알림에는 거의 항상 명령이 실린다("자동 수정 실행:
+            # <command>", "수정 명령 실행 실패: <command>"). rich 기본값은 콘솔 폭에
+            # 맞춰 **문자열 자체에** 개행을 끼워 넣어, 복사한 명령이 --index-url과
+            # 값으로 쪼개진다 — #91(FIX:)·#128(안내:)에서 두 번 고친 것과 같은
+            # 버그의 세 번째 경로다(#149).
+            console.print(escape(notice), soft_wrap=True)
 
     console.print()
 

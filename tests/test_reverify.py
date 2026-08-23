@@ -410,3 +410,76 @@ def test_cli_without_yes_does_not_call_reverify() -> None:
         assert result.exit_code == 1
         mock_apply_fix.assert_not_called()
         mock_reverify.assert_not_called()
+
+
+def test_cli_yes_recomputes_fix_after_reverify() -> None:
+    """재확인 후 FIX는 **재확인 결과 기준**으로 다시 계산된다 (#148).
+
+    1차 fix는 방금 실행해서 성공했을 수도 있는 명령이다. 그대로 두면 화면이 이미
+    끝난 일을 "지금 하세요"로 다시 안내한다 — torch를 재설치해 device=cuda가 된
+    뒤에도 같은 torch 재설치 명령이 다시 안내되고, 정작 남은 문제(bnb·peft
+    미설치)의 명령은 화면에 없었다(상영님 실측).
+    """
+    initial = {"status": "import_crash", "verdict": "FAIL", "reasons": ["import_crash"]}
+    # 재확인은 성공했지만 다른 이유로 아직 PASS가 아니다 — 여기가 어긋나던 자리다.
+    reverified = {"status": "ok", "device": "cuda", "verdict": "WARN", "reasons": ["other"]}
+    # fix_argv가 있어야 --yes가 실제 실행 분기를 탄다(#57).
+    stale = {
+        "cause": "torch_cpu_only_build",
+        "message": "old",
+        "fix_command": "pip install torch",
+        "fix_argv": ["pip", "install", "torch"],
+    }
+    fresh = {
+        "cause": "qlora_stack_not_installed",
+        "message": "new",
+        "fix_command": "pip install peft",
+        "fix_argv": ["pip", "install", "peft"],
+    }
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", return_value={"status": "import_crash"}),
+        patch("preflight.cli.judge_result", return_value=initial),
+        patch("preflight.cli.suggest_fix", side_effect=[stale, fresh]) as mock_suggest,
+        patch("preflight.cli.apply_fix"),
+        patch("preflight.cli.reverify", return_value=reverified),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        runner.invoke(app, ["check", "--yes"])
+
+    # 두 번째 호출이 재확인 결과를 받았는지 — 1차 결과로 다시 물으면 의미가 없다.
+    assert mock_suggest.call_count == 2
+    assert mock_suggest.call_args_list[1][0][0]["verdict"] == "WARN"
+    rendered = mock_render.call_args[0][0][0]
+    assert rendered["fix"] == fresh
+
+
+def test_cli_yes_drops_fix_when_reverify_passes() -> None:
+    """재확인이 PASS면 fix 키가 사라진다 (#148).
+
+    `suggest_fix`는 PASS면 None을 준다. 1차 fix를 남겨두면 다 고쳐진 화면에
+    수정 안내가 붙는다.
+    """
+    initial = {"status": "import_crash", "verdict": "FAIL", "reasons": ["import_crash"]}
+    reverified = {"status": "ok", "device": "cuda", "verdict": "PASS", "reasons": []}
+    stale = {
+        "cause": "torch_cpu_only_build",
+        "message": "old",
+        "fix_command": "pip install torch",
+        "fix_argv": ["pip", "install", "torch"],
+    }
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", return_value={"status": "import_crash"}),
+        patch("preflight.cli.judge_result", return_value=initial),
+        patch("preflight.cli.suggest_fix", side_effect=[stale, None]),
+        patch("preflight.cli.apply_fix"),
+        patch("preflight.cli.reverify", return_value=reverified),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        runner.invoke(app, ["check", "--yes"])
+
+    rendered = mock_render.call_args[0][0][0]
+    assert "fix" not in rendered

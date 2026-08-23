@@ -322,8 +322,13 @@ def check(
                 )
                 # 1차 결과를 재확인 결과로 갈아끼운다 — 그러지 않으면 수정이
                 # 성공해도 화면에는 1차의 ✖ 줄이 그대로 남고 종료 코드만 0이 된다
-                # (#57). CLI가 얹은 값(model_name·batch_size·seq_len)과 실행한
-                # fix는 유지하고, 자식이 잰 값은 통째로 새 측정값을 쓴다.
+                # (#57). CLI가 얹은 값(model_name·batch_size·seq_len)은 유지하고,
+                # 자식이 잰 값은 통째로 새 측정값을 쓴다.
+                #
+                # `fix`도 여기서 일단 옮기지만 **그대로 남지 않는다** — 아래에서
+                # 재확인 결과로 다시 계산해 덮거나 지운다(#148). 1차 fix는 방금
+                # 실행해 성공했을 수도 있는 명령이라 그대로 두면 끝난 일을 다시
+                # 안내하게 된다.
                 carried = {
                     key: fix_target[key]
                     for key in ("model_name", "batch_size", "seq_len", "fix")
@@ -332,7 +337,7 @@ def check(
                 # `list.index()`는 dict를 값으로 비교하므로 내용이 같은 다른 항목을
                 # 집을 수 있다 — 갈아끼울 자리는 동일성으로 찾는다.
                 index = next(i for i, r in enumerate(results) if r is fix_target)
-                results[index] = {
+                reverified_result = {
                     **reverified,
                     **carried,
                     "reverified": True,
@@ -340,6 +345,24 @@ def check(
                     # 남아, --yes가 실제로 무엇을 바꿨는지가 사라진다(#88).
                     "previous_verdict": fix_target.get("verdict"),
                 }
+                # **fix는 재확인 결과로 다시 계산한다.** `carried`가 옮겨온 1차 fix는
+                # 방금 실행해서 **성공했을 수도 있는** 명령이다. 그대로 두면 화면이
+                # 이미 끝난 일을 "지금 하세요"로 다시 안내한다 — 원래 원인은 고쳐졌는데
+                # 다른 이유로 여전히 PASS가 아닐 때 정확히 어긋난다. 실제로 torch를
+                # 재설치해 device=cuda가 된 뒤에도 같은 torch 재설치 명령이 다시
+                # 안내됐다(#148, 상영님 실측). 남은 문제(bnb·peft 미설치)의 명령은
+                # 화면에 없었다.
+                #
+                # "무엇을 실행했는가"라는 기록은 아래 `자동 수정 실행: <command>`
+                # 알림이 담당하므로(--json의 notices에도 그대로 실린다) 잃는 정보가 없다.
+                refreshed_fix = suggest_fix(reverified_result)
+                if refreshed_fix:
+                    reverified_result["fix"] = refreshed_fix
+                else:
+                    # 재확인이 PASS면 suggest_fix가 None을 준다. 1차 fix를 남겨두면
+                    # 다 고쳐진 화면에 수정 안내가 붙는다.
+                    reverified_result.pop("fix", None)
+                results[index] = reverified_result
                 # 재확인 1건으로 전체 verdict를 대체하지 않는다 — 그러면 재확인하지
                 # 않은 나머지 결과(예: 기본 체크의 WARN)가 종료 코드에서 사라진다(#68).
                 verdict = _aggregate_verdict(results)
