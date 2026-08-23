@@ -64,8 +64,26 @@ def judge_result(raw: dict) -> dict:
 
     # "quant_fallback"은 판정에 영향을 주지 않는 정보성 표시다(리포트 노출 목적).
     # reasons 전체가 아니라 FAIL/WARN 사유 집합에 속하는지로만 verdict를 정한다.
+    # QLoRA 학습에 필요한 라이브러리가 없으면 화면과 판정에 남긴다(#117).
+    #
+    # canary는 bitsandbytes가 없으면 nn.Linear로 폴백하고 peft는 아예 쓰지 않아
+    # **둘 다 없어도 여기까지 무사히 온다.** 하지만 사용자가 실제로 QLoRA 학습을
+    # 시작하면 `from_pretrained(quantization_config=...)`와 `from peft import ...`가
+    # 첫 줄에서 ImportError로 죽는다(실측) — 우리가 PASS를 내주면 거짓 안심이다.
+    #
+    # **FAIL이 아니라 WARN인 이유**: torch 미설치와 달리 "더 무거운 길"이 남아
+    # 있다. bnb만 없으면 양자화 없는 LoRA가, peft만 없으면 full finetuning이
+    # 가능하다. 다만 우리가 잰 숫자가 그 사용자가 실제로 할 수 있는 일을
+    # 대표하지 않으므로 PASS도 아니다.
+    #
+    # `False`(설치 안 됨 확정)일 때만 잡는다 — `None`은 "못 읽었다"이므로
+    # 단정하지 않는다.
+    env = raw.get("env") or {}
+    if env.get("bitsandbytes_installed") is False or env.get("peft_installed") is False:
+        reasons.append("qlora_stack_not_installed")
+
     fail_reasons = {"status_oom", "status_import_crash", "status_error", "quant_layer_device_cpu"}
-    warn_reasons = {"memory_delta_high", "cpu_multiplier_low"}
+    warn_reasons = {"memory_delta_high", "cpu_multiplier_low", "qlora_stack_not_installed"}
     if any(reason in fail_reasons for reason in reasons):
         verdict = "FAIL"
     elif any(reason in warn_reasons for reason in reasons):

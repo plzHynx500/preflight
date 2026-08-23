@@ -66,6 +66,9 @@ def classify_cause(check_result: dict) -> str:
         return "unknown_error"
 
     # 6. WARN 항목
+    # 미설치는 성능 경고보다 먼저다 — pip 한 줄로 끝나는, 가장 조치가 명확한 문제다.
+    if "qlora_stack_not_installed" in reasons:
+        return "qlora_stack_not_installed"
     if "memory_delta_high" in reasons:
         return "memory_delta_high"
     if "cpu_multiplier_low" in reasons:

@@ -276,10 +276,12 @@ def judge_result(raw: dict) -> dict:
 | 판정 | 조건 |
 |---|---|
 | FAIL | `status == "oom"` · `status == "import_crash"` · `status == "error"` · **`device == "cpu"`**(`quant_backend`와 무관) |
-| WARN | `memory_delta_mb`가 `env.gpu_free_mb`(canary 기동 직전 가용 VRAM)의 90% 이상 · `cpu_multiplier < 2` |
+| WARN | `memory_delta_mb`가 `env.gpu_free_mb`(canary 기동 직전 가용 VRAM)의 90% 이상 · `cpu_multiplier < 2` · **`env.bitsandbytes_installed` 또는 `env.peft_installed`가 `False`**(#117) |
 | PASS | 위 조건에 전부 해당하지 않음 |
 
-FAIL 4개·WARN 2개, 총 6개 판정 항목 전부 MVP 구현으로 팀이 확정했다(`status == "error"`는 W5 구현 중 추가). 두 숫자(90%, 2배)는 정밀 검증된 값이 아니라 매직넘버로 우선 채택한 것이며, 실측 데이터가 쌓이면 조정한다.
+**QLoRA 스택 미설치가 WARN 인 이유** — canary 는 `bitsandbytes` 가 없으면 `nn.Linear` 로 폴백하고 `peft` 는 아예 쓰지 않아 **둘 다 없어도 실행이 끝까지 간다.** 하지만 사용자가 실제로 QLoRA 학습을 시작하면 `from_pretrained(quantization_config=...)` 와 `from peft import ...` 가 첫 줄에서 `ImportError` 로 죽는다(실측) — PASS 를 내주면 거짓 안심이다. FAIL 이 아닌 것은 `torch` 미설치와 달리 **"더 무거운 길"이 남아 있기 때문**이다(bnb 만 없으면 양자화 없는 LoRA, `peft` 만 없으면 full finetuning). `False`(설치 안 됨 확정)일 때만 잡고 `None`(못 읽음)은 단정하지 않는다.
+
+FAIL 4개·WARN 3개, 총 7개 판정 항목이다. 처음 6개는 MVP 구현으로 팀이 확정했고(`status == "error"`는 W5 구현 중 추가). 두 숫자(90%, 2배)는 정밀 검증된 값이 아니라 매직넘버로 우선 채택한 것이며, 실측 데이터가 쌓이면 조정한다.
 
 > **`device == "cpu"` FAIL은 `quant_backend`와 무관하게 적용된다** (2026-08-03, #18로 발견된 계약 구멍 수정). 기본 체크의 목적 자체가 "GPU/드라이버/CUDA 체인이 물리적으로 살아있는가"([architecture.md §3](../architecture.md))라서, 4bit 레이어 유무와 무관하게 device가 cpu면 그 자체로 실패다. 원래는 `quant_backend == "bnb-4bit"`일 때만 이 조건을 봤는데, 그러면 bitsandbytes 자체가 없어 4bit 레이어가 없는 환경(`quant_backend == "nn-linear-fallback"`)은 이 규칙이 발동하지 못해 GPU가 전혀 없는데도 PASS가 나가는 구멍이 있었다. reason 이름은 `"quant_layer_device_cpu"`를 그대로 쓴다(하위 호환). `quant_backend == "nn-linear-fallback"`이면 이 FAIL과 별개로 `reasons`에 `"quant_fallback"`이 항상 추가로 남아 폴백 사실도 함께 드러난다(이 값 자체는 verdict에 영향을 주지 않는 정보성이다).
 >

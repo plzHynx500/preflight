@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from preflight import report
 from preflight.canary.judge import judge_result
 from preflight.cli import _aggregate_verdict, get_exit_code
 from preflight.report import _truncate_error_log, render_report
@@ -1085,3 +1088,68 @@ def test_render_report_long_path_first_frame_keeps_file_and_line(capsys) -> None
     out = capsys.readouterr().out.replace("\n", "")
     assert 'worker.py", line 77, in main' in out
     assert "ModuleNotFoundError: No module named 'torch'" in out
+
+
+# --- 없는 라이브러리마다 한 줄 (#117) ---
+
+
+def _stack_result(env: dict) -> dict:
+    return {
+        "status": "ok",
+        "device": "cuda",
+        "verdict": "WARN",
+        "reasons": ["qlora_stack_not_installed"],
+        "quant_backend": "nn-linear-fallback",
+        "env": env,
+    }
+
+
+def test_missing_stack_draws_one_line_per_library() -> None:
+    """원인도 결과도 다르므로 뭉치지 않는다 — 4bit 불가 vs LoRA 불가 (#117)."""
+    lines = report._missing_stack_lines(
+        _stack_result({"bitsandbytes_installed": False, "peft_installed": False})
+    )
+
+    assert len(lines) == 2
+    assert any("bitsandbytes" in line.text for line in lines)
+    assert any("peft" in line.text for line in lines)
+    # 정보성 표시가 아니라 문제로 센다 — 이 상태로는 학습이 안 된다.
+    assert all(line.is_problem for line in lines)
+
+
+def test_missing_stack_says_what_happens_to_the_user() -> None:
+    """ "우리 진단이 폴백했다"가 아니라 "당신 학습이 죽는다"를 말한다 (#117)."""
+    (line,) = report._missing_stack_lines(_stack_result({"bitsandbytes_installed": False}))
+
+    assert "ImportError" in (line.detail or ""), line
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"bitsandbytes_installed": None, "peft_installed": None},
+        {"bitsandbytes_installed": True, "peft_installed": True},
+    ],
+)
+def test_no_missing_stack_line_when_not_confirmed(env: dict) -> None:
+    assert report._missing_stack_lines(_stack_result(env)) == []
+
+
+def test_missing_stack_lines_are_not_repeated_in_model_mode(capsys) -> None:
+    """`--model` 모드에서 같은 경고가 두 번 찍히지 않는다 (#117).
+
+    설치 여부는 모델과 무관한 환경 사실이라 기본 체크와 모델 체크의 `env`가 항상
+    같다. `_build_lines`의 모드 분기 **밖**에서 그리면 두 블록에 똑같은 줄이 붙고,
+    문제 수까지 실제의 두 배로 부풀려진다.
+    """
+    env = {"bitsandbytes_installed": False, "peft_installed": False}
+    basic = _stack_result(env)
+    model = {**_stack_result(env), "model_name": "gpt2", "memory_delta_mb": 100.0}
+
+    render_report([basic, model])
+    out = capsys.readouterr().out
+
+    assert out.count("4bit 사용 불가") == 1, out
+    assert out.count("LoRA 사용 불가") == 1, out
+    assert "2개 문제 발견" in out, out

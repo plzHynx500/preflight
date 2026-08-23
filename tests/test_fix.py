@@ -852,3 +852,57 @@ def test_cli_check_with_yes_reverify_pass_exits_0() -> None:
         result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 0
         mock_apply_fix.assert_called_once()
+
+
+# --- QLoRA 스택 미설치: cause 하나 + 명령은 env 로 조립 (#117) ---
+
+
+def _stack_warn(env: dict) -> dict:
+    return {
+        "status": "ok",
+        "device": "cuda",
+        "verdict": "WARN",
+        "reasons": ["qlora_stack_not_installed"],
+        "quant_backend": "nn-linear-fallback",
+        "env": env,
+    }
+
+
+@pytest.mark.parametrize(
+    "env, expected_pkgs",
+    [
+        ({"bitsandbytes_installed": False, "peft_installed": True}, ["bitsandbytes>=0.46.1"]),
+        ({"bitsandbytes_installed": True, "peft_installed": False}, ["peft"]),
+        (
+            {"bitsandbytes_installed": False, "peft_installed": False},
+            ["bitsandbytes>=0.46.1", "peft"],
+        ),
+    ],
+)
+def test_missing_stack_command_is_assembled_from_env(env: dict, expected_pkgs: list) -> None:
+    """없는 것만 모아 **하나의** pip 명령으로 나간다 (#117).
+
+    명령을 나누면 사용자가 하나 고치고 다시 돌렸다가 또 다른 게 없다는 말을 듣는다.
+    cause 는 조합마다 만들지 않고 하나로 두고, 명령만 `env` 를 보고 조립한다.
+    """
+    fix = suggest_fix(_stack_warn(env))
+
+    assert fix is not None
+    assert fix["cause"] == "qlora_stack_not_installed"
+    assert fix["fix_argv"][-len(expected_pkgs) :] == expected_pkgs, fix["fix_argv"]
+    # 실행 가능한 명령이어야 --yes 가 한 번에 끝낸다.
+    assert fix["fix_command"] is not None
+
+
+def test_missing_stack_message_names_what_is_missing() -> None:
+    fix = suggest_fix(_stack_warn({"bitsandbytes_installed": False, "peft_installed": False}))
+
+    assert "bitsandbytes" in fix["message"] and "peft" in fix["message"], fix["message"]
+
+
+def test_unknown_install_state_does_not_build_a_command() -> None:
+    """`None` 은 명령에 넣지 않는다 — 모르는 것을 설치하라고 하지 않는다."""
+    fix = suggest_fix(_stack_warn({"bitsandbytes_installed": None, "peft_installed": None}))
+
+    assert fix is not None
+    assert fix["fix_command"] is None
