@@ -1305,3 +1305,120 @@ def test_render_report_cpu_verdict_keeps_4bit_wording_when_layer_was_built(capsy
     assert "bitsandbytes 4bit 레이어" in out
     assert "조용한 CPU 폴백" in out
     assert "연산 레이어" not in out
+
+
+def test_render_report_reverified_shows_before_after(capsys) -> None:
+    """재확인 블록은 "수정 전 → 수정 후"를 한 줄로 보여준다 (#88).
+
+    재확인 결과는 1차 결과와 **교체**되므로, 재확인 대상이 하나뿐이면 화면에
+    비교할 상대가 없다. `--yes`가 파는 것은 "✖였던 게 ✔로 바뀐다"인데 그 변화가
+    정작 화면에 없었다 — 표제의 "(재확인)" 말고는 --yes를 쓴 화면과 안 쓴 화면이
+    구별되지 않았다.
+    """
+    result = {**judge_result(_OK_RAW), "reverified": True, "previous_verdict": "FAIL"}
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "수정 전" in out
+    assert "FAIL" in out
+    assert "수정 후" in out
+    assert "PASS" in out
+
+
+def test_render_report_reverified_says_so_when_nothing_changed(capsys) -> None:
+    """판정이 그대로면 "(변화 없음)"이라고 못박는다 (#88).
+
+    화살표만 있으면 같은 값이 두 번 찍힌 것처럼 읽힌다. 사용자가 가장 알고 싶은
+    것은 "그래서 고쳐졌나"라 명시적으로 말해준다.
+    """
+    raw = {**_OK_RAW, "device": "cpu"}
+    result = {**judge_result(raw), "reverified": True, "previous_verdict": "FAIL"}
+
+    render_report([result])
+
+    assert "(변화 없음)" in capsys.readouterr().out
+
+
+def test_render_report_reverified_omits_recheck_instruction(capsys) -> None:
+    """재확인한 블록에는 `재확인: preflight check --yes` 안내가 안 나온다 (#88).
+
+    방금 --yes로 재확인을 마친 화면이다. 그대로 따르면 같은 설치를 100초 넘게
+    들여 반복하고 똑같은 화면을 본다(상영님 실측).
+    """
+    raw = {**_OK_RAW, "device": "cpu"}
+    result = {
+        **judge_result(raw),
+        "reverified": True,
+        "previous_verdict": "FAIL",
+        "fix": {"cause": "x", "message": "m", "fix_command": "pip install bitsandbytes"},
+    }
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "FIX: pip install bitsandbytes" in out
+    assert "재확인: preflight check --yes" not in out
+
+
+def test_render_report_non_reverified_keeps_recheck_instruction(capsys) -> None:
+    """재확인하지 않은 블록에는 안내가 그대로 남는다 — 회귀 방지."""
+    raw = {**_OK_RAW, "device": "cpu"}
+    result = {
+        **judge_result(raw),
+        "fix": {"cause": "x", "message": "m", "fix_command": "pip install bitsandbytes"},
+    }
+
+    render_report([result])
+
+    assert "재확인: preflight check --yes" in capsys.readouterr().out
+
+
+def test_render_report_reverified_delta_line_does_not_change_counts(capsys) -> None:
+    """수정 전/후 줄은 항목 수에도 문제 수에도 안 들어간다 (#88 완료 조건).
+
+    판정을 받은 항목이 아니라 그 항목에 대한 설명이다. 여기가 어긋나면 화면의
+    "N개 항목 확인"과 --json의 `summary.total_items`가 갈라진다.
+    """
+    base = judge_result(_OK_RAW)
+    with_delta = {**base, "reverified": True, "previous_verdict": "FAIL"}
+
+    render_report([base])
+    plain = capsys.readouterr().out
+    render_report([with_delta])
+    reverified = capsys.readouterr().out
+
+    def summary(text: str) -> str:
+        return next(line for line in text.splitlines() if "항목 확인" in line)
+
+    assert "수정 전" in reverified
+    assert summary(plain) == summary(reverified)
+
+
+def test_render_report_reverified_without_previous_verdict_omits_line(capsys) -> None:
+    """1차 판정이 안 실려 오면 줄을 만들지 않는다 (#88).
+
+    `render_report`를 직접 부르는 호출자는 `previous_verdict`를 모를 수 있다.
+    비교할 것이 없으면 지금까지의 화면 그대로 둔다.
+    """
+    result = {**judge_result(_OK_RAW), "reverified": True}
+
+    render_report([result])
+
+    assert "수정 전" not in capsys.readouterr().out
+
+
+def test_render_report_reverified_delta_survives_failed_status(capsys) -> None:
+    """status가 ok가 아니어도 수정 전/후 줄은 나온다 (#88).
+
+    `_build_check_lines`는 그 경우 판정 줄 하나만 내고 일찍 끝나는데, **수정 후에도
+    여전히 실패한 경우가 바로 그 경로다** — "고쳐지지 않았다"를 알려줘야 하는 때다.
+    """
+    raw = {**_OK_RAW, "status": "import_crash", "error_log": "boom"}
+    result = {**judge_result(raw), "reverified": True, "previous_verdict": "FAIL"}
+
+    render_report([result])
+
+    out = capsys.readouterr().out
+    assert "수정 전" in out
+    assert "(변화 없음)" in out

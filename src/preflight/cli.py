@@ -302,7 +302,14 @@ def check(
                 # `list.index()`는 dict를 값으로 비교하므로 내용이 같은 다른 항목을
                 # 집을 수 있다 — 갈아끼울 자리는 동일성으로 찾는다.
                 index = next(i for i, r in enumerate(results) if r is fix_target)
-                results[index] = {**reverified, **carried, "reverified": True}
+                results[index] = {
+                    **reverified,
+                    **carried,
+                    "reverified": True,
+                    # 1차 판정을 함께 실어 보낸다. 교체해버리면 화면에 "수정 후"만
+                    # 남아, --yes가 실제로 무엇을 바꿨는지가 사라진다(#88).
+                    "previous_verdict": fix_target.get("verdict"),
+                }
                 # 재확인 1건으로 전체 verdict를 대체하지 않는다 — 그러면 재확인하지
                 # 않은 나머지 결과(예: 기본 체크의 WARN)가 종료 코드에서 사라진다(#68).
                 verdict = _aggregate_verdict(results)
