@@ -5,8 +5,10 @@
 """
 
 import json
+import os
 import subprocess
 import sys
+import time
 import types
 from unittest import mock
 
@@ -100,6 +102,57 @@ def test_run_canary_check_survives_subprocess_failure(monkeypatch) -> None:
 
     assert result["status"] == "error"
     assert "subprocess를 띄울 수 없음" in result["error_log"]
+
+
+# ── 강제 종료로 남은 workdir 정리 (#132) ─────────────────────────────────────
+#
+# 부모가 강제 종료되면 `_run_worker()`의 `finally`가 전혀 돌지 않아
+# `preflight-canary-*` workdir가 영구히 남는다. 다음 실행 시작 시 오래된
+# 잔여물만 지우는 `_cleanup_stale_workdirs()`를 검증한다.
+
+
+def test_cleanup_stale_workdirs_removes_only_old_matching_dirs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(engine.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    old_dir = tmp_path / "preflight-canary-old"
+    old_dir.mkdir()
+    (old_dir / "result.json").write_text("{}", encoding="utf-8")
+    old_time = time.time() - engine.STALE_WORKDIR_AGE_SEC - 60
+    os.utime(old_dir, (old_time, old_time))
+
+    fresh_dir = tmp_path / "preflight-canary-fresh"
+    fresh_dir.mkdir()
+
+    unrelated_dir = tmp_path / "some-other-tool-tmp"
+    unrelated_dir.mkdir()
+    os.utime(unrelated_dir, (old_time, old_time))
+
+    engine._cleanup_stale_workdirs()
+
+    assert not old_dir.exists()
+    assert fresh_dir.exists()
+    assert unrelated_dir.exists()
+
+
+def test_cleanup_stale_workdirs_swallows_errors(monkeypatch) -> None:
+    """정리 자체가 실패해도 예외를 던지지 않는다 — 실제 체크를 막으면 안 된다."""
+
+    def explode(_pattern):
+        raise OSError("디스크 조회 실패")
+
+    monkeypatch.setattr(engine.glob, "glob", explode)
+
+    engine._cleanup_stale_workdirs()  # 예외 없이 반환하면 통과
+
+
+def test_run_canary_check_cleans_up_stale_workdirs_before_running(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(engine, "_cleanup_stale_workdirs", lambda: calls.append(True))
+    monkeypatch.setattr(engine.subprocess, "run", _fake_worker(_OK_PAYLOAD))
+
+    run_canary_check(None, 1, 8)
+
+    assert calls == [True]
 
 
 @requires_cuda
