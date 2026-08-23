@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
+from preflight.canary.worker import _PREWRITE_IMPORT_NOTE
 from preflight.cli import app
 from preflight.fix.causes import classify_cause
 from preflight.fix.executor import FixExecutionError, apply_fix, suggest_fix
@@ -181,6 +182,39 @@ def test_classify_real_bitsandbytes_import_crash_still_matches() -> None:
             "error_log": log,
         }
         assert classify_cause(res) == "bnb_not_compiled_with_cuda", log
+
+
+# ── 사전 기록 문구는 원인 분류 시그니처와 겹치면 안 된다 (#93) ─────────────────
+
+
+def test_prewritten_import_crash_does_not_name_a_library() -> None:
+    """네이티브 즉사 결과가 특정 라이브러리 탓으로 분류되지 않는다 (#93).
+
+    `.so` 로드 실패로 프로세스가 즉사하면 자식은 아무것도 쓰지 못하고, 부모는
+    worker가 **미리 써둔 문구**를 그대로 `error_log`로 읽는다. 그 문구에
+    `classify_cause`의 시그니처 문자열(`bitsandbytes` 등)이 들어 있으면
+    **무엇이 죽었든 그 라이브러리 탓**이 된다 — torch의 .so가 죽어도
+    "bitsandbytes를 재설치하라"가 나가고, 그 원인은 `fix_command`를 가진
+    몇 안 되는 원인이라 `--yes`면 무관한 재설치가 실제로 실행된다.
+
+    문구를 그대로 참조한다(복사하지 않는다) — 복사하면 나중에 worker의 문구를
+    바꿔도 이 테스트가 안 깨져서 회귀를 못 잡는다.
+    """
+    result = {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["status_import_crash"],
+        "error_log": _PREWRITE_IMPORT_NOTE,
+        "env": {},
+    }
+
+    assert classify_cause(result) == "import_crash_general"
+
+    fix = suggest_fix(result)
+    assert fix is not None
+    # 원인을 특정하지 못한 상태이므로 --yes가 실행할 명령이 없어야 한다.
+    assert fix["fix_command"] is None
+    assert fix["fix_argv"] is None
 
 
 # ── cpu 폴백 분류: env의 환경 사실을 읽는다 (#55, #72) ─────────────────────────
