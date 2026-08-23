@@ -14,6 +14,24 @@ from preflight.report import render_report
 
 runner = CliRunner()
 
+
+def _make_stderr_runner() -> CliRunner:
+    """`result.stderr`를 쓸 수 있는 CliRunner를 만든다.
+
+    CI 매트릭스의 Python 3.9는 typer 0.23 + 외부 click 8.1을 받는데, 그 click의
+    `CliRunner`는 `mix_stderr=False`를 명시해야 stdout/stderr가 분리된다(기본은
+    합쳐서 `stdout`에만 담긴다). Python 3.12(로컬 개발환경)는 typer 0.27+가 click을
+    자체 벤더링하고 있어 `mix_stderr` 파라미터 자체가 없고 항상 분리돼 있다 —
+    그래서 버전에 따라 있는 파라미터가 다르다.
+    """
+    try:
+        return CliRunner(mix_stderr=False)
+    except TypeError:
+        return CliRunner()
+
+
+stderr_runner = _make_stderr_runner()
+
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -500,7 +518,7 @@ def test_check_prints_progress_to_stderr_before_canary_runs() -> None:
         patch("preflight.cli.judge_result", return_value=fake_res),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["check"])
+        result = stderr_runner.invoke(app, ["check"])
 
         assert result.exit_code == 0
         assert "진단 중" in result.stderr
@@ -520,7 +538,7 @@ def test_check_json_stdout_stays_pure_while_progress_goes_to_stderr() -> None:
         patch("preflight.cli.run_canary_check", return_value=fake_raw),
         patch("preflight.cli.judge_result", return_value=fake_res),
     ):
-        result = runner.invoke(app, ["check", "--json"])
+        result = stderr_runner.invoke(app, ["check", "--json"])
 
         assert result.exit_code == 0
         assert "진단 중" in result.stderr
@@ -549,7 +567,7 @@ def test_check_yes_prints_fix_and_reverify_progress_to_stderr_in_order() -> None
         patch("preflight.cli.reverify", return_value=fake_reverified),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["check", "--yes"])
+        result = stderr_runner.invoke(app, ["check", "--yes"])
 
         assert result.exit_code == 0
         fix_index = result.stderr.index("수정 명령 실행 중")
@@ -575,7 +593,7 @@ def test_check_yes_no_fix_command_skips_fix_progress_line() -> None:
         patch("preflight.cli.judge_result", return_value=fake_initial),
         patch("preflight.cli.render_report"),
     ):
-        result = runner.invoke(app, ["check", "--yes"])
+        result = stderr_runner.invoke(app, ["check", "--yes"])
 
         assert "수정 명령 실행 중" not in result.stderr
         assert "재확인 중" not in result.stderr
