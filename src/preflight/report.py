@@ -40,7 +40,7 @@ _KNOWN_ERROR_CLASSES = {"ModelConfigError"}
 
 # --model 모드 전용 폴백 문구 (_quant_fallback_line 참고).
 _MODEL_MODE_QUANT_FALLBACK_MESSAGE = (
-    "4bit 레이어 구성 실패 → fp32 전체 모델로 실측됨 (VRAM 수치가 QLoRA 기준보다 크다)"
+    "4bit 레이어 구성 실패 → 양자화 없는 베이스로 실측됨 (VRAM 수치가 QLoRA 기준보다 크다)"
 )
 
 _ERROR_LOG_MAX_CHARS = 200
@@ -330,8 +330,12 @@ def _quant_fallback_line(result: dict, model_mode: bool = False) -> _Line | None
 
     두 모드가 공유하되 문구는 다르다. 기본 체크 문구의 "(device=cpu 판정 생략)"은
     --model 모드에선 틀린 말이고, 그쪽에서 정작 알려야 할 것은 **화면의 VRAM 실측이
-    QLoRA가 아니라 fp32 전체 모델 기준**이라는 사실이다 — 4bit이었다면 훨씬 작았을
-    숫자라, 폴백 사실을 모르면 사용자는 "이 GPU로는 무리"라는 반대 결론을 낸다(#66).
+    QLoRA 기준이 아니다**라는 사실이다 — 4bit이었다면 훨씬 작았을 숫자라, 폴백 사실을
+    모르면 사용자는 "이 GPU로는 무리"라는 반대 결론을 낸다(#66).
+
+    "fp32 전체 모델로 실측됨"이라고 적었던 것을 #75에서 "양자화 없는 베이스"로 바꿨다 —
+    폴백도 이제 베이스를 얼리고 LoRA만 학습하므로 전체 파인튜닝이 아니다. 여전히 큰
+    쪽으로 틀리는 것은 양자화(4bit)가 빠진 부분뿐이다.
     """
     if result.get("quant_backend") != "nn-linear-fallback" and (
         "quant_fallback" not in result.get("reasons", [])

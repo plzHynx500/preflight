@@ -261,7 +261,7 @@ def test_build_dummy_model_lora_hook_actually_changes_output_and_gets_gradient(
 def test_build_dummy_model_falls_back_to_fp32_when_bitsandbytes_missing(
     fake_transformers, monkeypatch
 ) -> None:
-    """bitsandbytes가 없으면(이 환경의 실제 상태) 죽지 않고 fp32 전체 모델로 폴백한다."""
+    """bitsandbytes가 없으면 죽지 않고 양자화 없는 nn.Linear 베이스로 폴백한다."""
     _remove_module(monkeypatch, "bitsandbytes")
 
     from preflight.canary.model import build_dummy_model
@@ -293,6 +293,173 @@ def test_build_dummy_model_fallback_moves_model_to_requested_device(
     assert quant_backend == "nn-linear-fallback"
     param_devices = {param.device.type for param in model.parameters()}
     assert param_devices == {"meta"}, f"폴백 모델이 요청 device로 안 올라갔다: {param_devices}"
+
+
+# ── 폴백도 QLoRA의 모양을 유지한다 (#75) ──────────────────────────────────────
+#
+# 4bit 구성이 실패해도 "베이스는 얼고 어댑터만 학습한다"는 부분은 torch만으로 된다.
+# 안 하면 폴백이 fp32 전체 파인튜닝이 되어 파라미터당 16바이트(가중치+gradient+
+# AdamW 상태)가 들고, canary가 재는 대상이 사용자의 계획(QLoRA)과 달라진다.
+
+
+def test_build_dummy_model_fallback_freezes_base_and_trains_only_lora(
+    fake_transformers, monkeypatch
+) -> None:
+    """폴백 모델도 베이스는 얼고 LoRA 어댑터만 학습 대상이다 (#75).
+
+    4bit 경로의 동일 테스트(test_build_dummy_model_freezes_base_and_trains_only_lora)와
+    대칭이다 — 양자화만 빠지고 학습 경로의 모양은 같아야 한다.
+    """
+    _remove_module(monkeypatch, "bitsandbytes")
+
+    from preflight.canary.model import build_dummy_model
+
+    model, _config, quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+
+    assert quant_backend == "nn-linear-fallback"
+    trainable = {name for name, p in model.named_parameters() if p.requires_grad}
+    frozen = {name for name, p in model.named_parameters() if not p.requires_grad}
+
+    assert trainable, "LoRA 어댑터가 학습 대상으로 잡혀야 한다"
+    assert all("lora_down" in name or "lora_up" in name for name in trainable), trainable
+    assert "layer1.weight" in frozen and "layer2.weight" in frozen, frozen
+
+
+def test_build_dummy_model_fallback_skips_lm_head_like_the_4bit_path(
+    fake_transformers, monkeypatch
+) -> None:
+    """폴백의 어댑터 대상은 4bit 경로의 변환 대상과 같다 — lm_head는 얼기만 한다.
+
+    두 경로가 "베이스로 취급하는 레이어"를 다르게 잡으면, 폴백이 재는 대상이
+    4bit 경로와 달라져 비교 자체가 성립하지 않는다.
+    """
+    _remove_module(monkeypatch, "bitsandbytes")
+
+    from preflight.canary.model import build_dummy_model
+
+    model, _config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+
+    names = dict(model.named_parameters())
+    assert "lm_head.lora_down.weight" not in names
+    assert names["lm_head.weight"].requires_grad is False
+
+
+def test_build_dummy_model_fallback_lora_hook_changes_output_and_gets_gradient(
+    fake_transformers, monkeypatch
+) -> None:
+    """폴백 LoRA 훅이 실제 forward에 관여하고 backward에서 gradient를 받는다.
+
+    up을 0으로 초기화하는 관례상 첫 forward는 베이스와 같은 값이라, up.weight를
+    직접 흔들어 훅이 출력에 반영되는지 확인한다(4bit 경로 테스트와 동일한 방법).
+    """
+    _remove_module(monkeypatch, "bitsandbytes")
+
+    from preflight.canary.model import build_dummy_model
+
+    model, _config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+    # 폴백 모델은 dtype 지정 없이 from_config로 만들어져 float32다 — 어댑터도 베이스
+    # weight의 dtype을 따라가므로 입력만 맞춰주면 된다.
+    dummy_input = torch.randn(2, 8)
+
+    baseline = model(dummy_input)
+
+    lora_up = [p for name, p in model.named_parameters() if name.endswith("lora_up.weight")]
+    assert lora_up
+    with torch.no_grad():
+        lora_up[0].add_(1.0)
+
+    perturbed = model(dummy_input)
+    assert not torch.allclose(baseline, perturbed), (
+        "lora_up을 흔들었는데 출력이 그대로면 훅이 안 걸린 것"
+    )
+
+    model(dummy_input).sum().backward()
+    assert lora_up[0].grad is not None
+    assert (lora_up[0].grad != 0).any()
+
+
+def test_freeze_base_and_attach_lora_cuts_trainable_params_to_a_small_fraction() -> None:
+    """학습 대상이 어댑터로 줄어드는 것을 수치로 확인한다 (#75의 요지).
+
+    gradient·AdamW 상태는 **학습 대상 파라미터에만** 붙으므로, 이 비율이 그대로
+    폴백 실행의 메모리 절감폭이 된다.
+    """
+    from preflight.canary.model import _freeze_base_and_attach_lora
+
+    hidden = 512
+    model = nn.Sequential(
+        nn.Linear(hidden, hidden, bias=False),
+        nn.Linear(hidden, hidden, bias=False),
+    )
+
+    assert _freeze_base_and_attach_lora(model) is True
+
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    assert trainable / total < 0.1, f"학습 대상이 {trainable}/{total}로 거의 안 줄었다"
+
+
+def test_freeze_base_and_attach_lora_does_not_nest_adapters_in_adapters() -> None:
+    """어댑터(lora_down/lora_up)도 nn.Linear라, 순회하며 붙이면 어댑터에 또 붙는다."""
+    from preflight.canary.model import _freeze_base_and_attach_lora
+
+    model = nn.Sequential(nn.Linear(8, 8, bias=False))
+    _freeze_base_and_attach_lora(model)
+
+    nested = [name for name, _ in model.named_parameters() if name.count("lora_") > 1]
+    assert nested == [], nested
+
+
+def test_freeze_base_and_attach_lora_reverts_when_there_is_nothing_to_attach() -> None:
+    """붙일 대상이 없으면 동결을 되돌린다 — 학습 대상 0개는 옵티마이저를 죽인다.
+
+    `worker._execute_canary_cycle`이 `AdamW([])`를 만들면
+    `ValueError: optimizer got an empty parameter list`로 죽어, 메모리를 아끼려다
+    진단 자체를 잃는다.
+    """
+    from preflight.canary.model import _freeze_base_and_attach_lora
+
+    class _OnlyExcludedHead(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embed = nn.Embedding(16, 4)
+            self.lm_head = nn.Linear(4, 16, bias=False)
+
+    model = _OnlyExcludedHead()
+
+    assert _freeze_base_and_attach_lora(model) is False
+    assert all(p.requires_grad for p in model.parameters())
+
+
+def test_freeze_base_and_attach_lora_survives_torch_import_failure(monkeypatch) -> None:
+    """`import torch`가 죽는 환경에서도 폴백을 깨뜨리지 않는다.
+
+    이 함수를 부르는 분기는 torch import 실패로도 들어올 수 있다 — 안전장치가
+    안전장치를 부수면 안 된다.
+    """
+    from preflight.canary.model import _freeze_base_and_attach_lora
+
+    model = nn.Sequential(nn.Linear(8, 8, bias=False))
+    _remove_module(monkeypatch, "torch")
+
+    assert _freeze_base_and_attach_lora(model) is False
+    assert all(p.requires_grad for p in model.parameters())
+
+
+def test_base_layer_device_finds_frozen_base_on_fallback_model(
+    fake_transformers, monkeypatch
+) -> None:
+    """폴백 모델도 이제 얼린 베이스를 갖는다 — worker가 첫 파라미터로 물러서지 않는다 (#66→#75)."""
+    _remove_module(monkeypatch, "bitsandbytes")
+
+    from preflight.canary.model import build_dummy_model
+    from preflight.canary.worker import _base_layer_device
+
+    model, _config, _quant_backend = build_dummy_model("some-org/some-model", device="cpu")
+
+    frozen = [p for p in model.parameters() if not p.requires_grad]
+    assert frozen, "폴백 모델에 얼린 베이스가 있어야 한다"
+    assert _base_layer_device(model) == "cpu"
 
 
 def test_build_dummy_input_uses_vocab_size_from_config() -> None:
