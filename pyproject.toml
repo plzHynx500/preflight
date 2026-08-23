@@ -13,6 +13,26 @@ readme = "readme.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 authors = [{ name = "Preflight team" }]
+keywords = ["fine-tuning", "qlora", "lora", "cuda", "gpu", "diagnostics", "bitsandbytes"]
+# 파이썬 버전은 requires-python(">=3.9")·CI 매트릭스(3.9·3.12)와 어긋나면 안 된다.
+# 3.13은 CI가 돌리지 않으므로 **적지 않는다** — 검증하지 않은 것을 지원한다고 적으면
+# 그 자체가 잘못된 진단 정보다(이 도구가 고치려는 문제와 같은 부류다).
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
 dependencies = [
     "typer>=0.12",
     "rich>=13.0",
@@ -28,6 +48,11 @@ dependencies = [
 # 사용자 venv에 이미 설치된 버전을 그대로 불러와 검증하는 것이 핵심 설계이므로
 # (docs/architecture.md §2 "학습 스택 연동" 참고), preflight 자신의 설치가 그 환경을
 # 덮어쓰면 안 된다.
+
+[project.urls]
+Homepage = "https://github.com/plzHynx500/preflight"
+Repository = "https://github.com/plzHynx500/preflight"
+Issues = "https://github.com/plzHynx500/preflight/issues"
 
 [project.optional-dependencies]
 dev = [
