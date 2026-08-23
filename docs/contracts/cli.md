@@ -181,6 +181,26 @@ FIX: /home/user/venv/bin/python -m pip install bitsandbytes --upgrade --force-re
 
 `notices`는 **판정이 아니라 도구가 한 일**을 담는 문자열 배열이다(`--yes`가 실행한 명령, 실행할 명령이 없었다는 사실, 수정 실패). 텍스트 모드에서는 요약 줄 앞에 같은 내용이 나온다. `--yes` 없이 실행하면 항상 빈 배열이다. 수정 명령이 실패해도 pip의 stdout/stderr는 싣지 않는다 — 그대로 흘리면 화면이 길게 쏟아지므로, 대신 명령을 직접 실행해 확인하라고 안내한다.
 
+## 진행 표시 (stderr)
+
+기본 체크만도 첫 줄까지 10초 안팎(torch import + canary 실행), `--yes`는 pip 재설치 + canary
+재실행으로 1분 넘게 아무 출력이 없어 멈춘 것처럼 보인다(#63). `check`는 오래 걸리는 단계
+직전에 아래 안내를 **stderr**로 한 줄씩 찍는다 — `results`/`summary`/`notices`가 담기는
+stdout(`--json`이 아니어도 텍스트 리포트도 stdout)과는 별개다.
+
+| 시점 | 문구 |
+|---|---|
+| canary 실행 직전 (기본 체크·모델 체크·`--yes`로 재개된 모델 체크 모두) | `진단 중… (torch 불러오기 · canary 실행, 수 초~수십 초)` |
+| `--yes`가 수정 명령을 실행하기 직전 | `수정 명령 실행 중: <fix_command>` |
+| `--yes`가 재확인(reverify)을 시작하기 직전 | `재확인 중…` |
+
+실행할 수정 명령이 없는 경우(`fix_argv`가 `null`)는 `apply_fix`/`reverify`를 아예 부르지
+않으므로 뒤 두 줄도 찍히지 않는다.
+
+`--json`은 이 절과 무관하다 — stdout에는 여전히 `print(json.dumps(...))` 한 번뿐이라
+`preflight check --json > result.json`처럼 리다이렉트해도 stderr의 진행 표시가 섞여
+들어가지 않는다.
+
 > `summary.total_items`는 `results` 배열의 원소 개수가 아니라, 텍스트 모드에서 찍히는 항목 줄 개수(위 기본 체크 예시의 "3개 항목")와 같은 값이다 — 아래 예시는 canary 실행 1건(`results` 원소 1개)에서 status·실행시간·quant 세 줄이 나오는 경우라 `total_items`가 3이다.
 
 ```
