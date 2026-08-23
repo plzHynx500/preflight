@@ -63,6 +63,22 @@ def callback(
     """Preflight CLI."""
 
 
+def _progress(message: str) -> None:
+    """진행 상황을 stderr에 한 줄 찍는다 (#63).
+
+    기본 체크는 첫 줄까지 10초 안팎, `--yes`는 pip 재설치+canary 재실행으로 1분
+    넘게 아무 출력이 없어 멈춘 것처럼 보인다. stdout은 `--json` 계약(cli.md)상
+    결과만 담아야 하므로 stderr를 쓴다.
+
+    직후 `flush()`가 필요하다 — 안 하면 뒤이어 돌 몇 초~몇십 초짜리 canary/pip
+    실행 동안 이 줄이 파이프 버퍼에 잠겨 있다가 나중에야 나온다. 화면에 먼저
+    보여주는 것이 이 기능의 목적이라 지연되면 의미가 없다(리다이렉트되면
+    표준 스트림이 줄 단위 대신 블록 단위로 버퍼링되는 게 원인).
+    """
+    print(message, file=sys.stderr)
+    sys.stderr.flush()
+
+
 def get_exit_code(verdict: str) -> int:
     """판정 결과(PASS/WARN/FAIL)에 따른 CLI 종료 코드 반환.
 
@@ -149,6 +165,7 @@ def check(
 
     state = query_gpu_state()
 
+    _progress("진단 중… (torch 불러오기 · canary 실행, 수 초~수십 초)")
     raw_basic = run_canary_check(
         model_name=None,
         batch_size=1,
@@ -160,6 +177,7 @@ def check(
             "gpu_free_mb": state["free_mb"],
             "gpu_total_mb": state["total_mb"],
             "gpu_driver_version": state["driver_version"],
+            "gpu_name": state["name"],
         }
 
     basic_res = judge_result(raw_basic)
@@ -170,6 +188,7 @@ def check(
         if basic_res.get("verdict") == "FAIL":
             results.append({**meta, "skipped": "환경 체크 실패"})
         else:
+            _progress("진단 중… (torch 불러오기 · canary 실행, 수 초~수십 초)")
             raw_model = run_canary_check(
                 model_name=model,
                 batch_size=batch_size or 1,
@@ -181,6 +200,7 @@ def check(
                     "gpu_free_mb": state["free_mb"],
                     "gpu_total_mb": state["total_mb"],
                     "gpu_driver_version": state["driver_version"],
+                    "gpu_name": state["name"],
                 }
             # 이미 잰 값을 그대로 쓴다 — 재측정하면 canary 자신의 점유만큼 깎여 오염된다
             model_res = judge_result(raw_model)
@@ -204,6 +224,7 @@ def check(
                 " — 위 안내를 보고 직접 조치해야 한다."
             )
         else:
+            _progress(f"수정 명령 실행 중: {command}")
             try:
                 apply_fix(fix)
             except FixExecutionError as error:
@@ -213,6 +234,7 @@ def check(
                 notices.append(_describe_fix_failure(error, str(command)))
             else:
                 notices.append(f"자동 수정 실행: {command}")
+                _progress("재확인 중…")
                 # 재확인은 **fix의 근거가 된 그 체크**를 같은 조건으로 다시 돌린다.
                 # 예전에는 --model이 주어졌으면 언제나 모델 canary를 돌렸는데,
                 # 기본 체크가 FAIL이면 모델 체크는 fail-fast로 한 번도 실행된 적이
@@ -258,6 +280,7 @@ def check(
                         # 다시 조회한다 — fix 실행 전 값은 더 이상 유효하지 않다
                         # (reverify.py 참고).
                         model_state = query_gpu_state()
+                        _progress("진단 중… (torch 불러오기 · canary 실행, 수 초~수십 초)")
                         raw_model = run_canary_check(
                             model_name=model_name,
                             batch_size=model_batch_size,
@@ -269,6 +292,7 @@ def check(
                                 "gpu_free_mb": model_state["free_mb"],
                                 "gpu_total_mb": model_state["total_mb"],
                                 "gpu_driver_version": model_state["driver_version"],
+                                "gpu_name": model_state["name"],
                             }
                         model_res = judge_result(raw_model)
                         results[skipped_index] = {

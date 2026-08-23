@@ -157,7 +157,8 @@ RTX 4070 Ti·8B급 모델 기준 RAM 피크 1.75GB·VRAM 최고점 5.77GB로 실
 
 4bit 구성이 실패하면(bitsandbytes 미설치·구버전, `replace_with_bnb_linear`가 향후
 transformers 버전에서 사라지는 경우 등) `build_minimal_canary_model`과 동일한 폴백
-철학으로 fp32 전체 모델로 대체하고 `quant_backend="nn-linear-fallback"`으로 알린다.
+철학으로 베이스를 평범한 `nn.Linear`로 대체하고 `quant_backend="nn-linear-fallback"`으로
+알린다.
 
 **폴백 모델도 `device`가 가리키는 곳으로 옮긴다** — 4bit 경로든 폴백 경로든 `device`
 파라미터의 의미는 같다(#66). 이걸 빼먹으면 폴백 모델만 CPU에 남아, 호출자가 같은
@@ -167,16 +168,33 @@ same device`로 죽는다 — 폴백은 "bitsandbytes가 없어도 진단은 계
 두는 대안도 검토했으나, 그러면 `device=cpu`가 그대로 FAIL 판정("GPU가 죽었다")이 되어
 더 나쁜 오진을 내고 `--model`의 존재 이유인 VRAM 실측도 통째로 잃는다.
 
-단 이 폴백은 fp32 전체 모델이 RAM/VRAM에 통째로 올라가므로(8B 기준 약 30GB, 게다가
-베이스를 얼리지 않아 gradient·옵티마이저 상태까지 붙는다) canary 도구 자체가 진단을
-마치기 전에 먼저 죽을 수 있다 — "4bit이 안 되는 환경"이라는 신호로는 유효하지만
-쾌적하게 죽지는 않는다(개선 여지, 지금 범위 밖 — #75).
+**폴백도 QLoRA의 *모양*은 유지한다(#75)** — 베이스를 얼리고(`requires_grad_(False)`)
+`nn.Linear`마다 LoRA 어댑터를 붙여 어댑터만 학습 대상으로 둔다. 양자화(4bit)는
+bitsandbytes 없이 못 하지만 "베이스는 얼고 어댑터만 학습한다"는 부분은 torch만으로
+되기 때문이다. 이게 없으면 폴백은 **fp32 전체 파인튜닝**이 되어 파라미터당 16바이트
+(가중치 4 + gradient 4 + AdamW 상태 8, 8B급이면 약 128GB)가 들고, 위에 적은 "QLoRA는
+옵션이 아니라 고정 가정"과 정면으로 어긋난다 — 폴백이 발동하는 순간 진단이 재는 대상
+자체가 사용자의 계획과 달라진다. 얼리면 gradient·옵티마이저 상태가 어댑터에만 붙어
+파라미터당 약 4바이트로 내려간다.
 
-폴백 모델은 베이스를 얼리지도 LoRA를 붙이지도 않아 **모든 파라미터가
-`requires_grad=True`** 다. `worker._base_layer_device()`가 "얼린 베이스 레이어"를 찾아
-`device` 필드를 채우므로, 얼린 파라미터가 하나도 없으면 첫 파라미터의 device로 물러선다 —
-그러지 않으면 이 경로에서만 `device`가 `None`이 되어 화면에 `device=None`이 찍히고
-`judge_result`의 `device=="cpu"` FAIL 규칙도 발동하지 못한다(#66).
+어댑터를 붙이는 대상은 4bit 경로의 변환 대상과 같다(`lm_head` 제외) — 두 경로가
+"베이스로 취급하는 레이어"를 다르게 잡으면 폴백이 재는 것이 4bit 경로와 달라진다.
+`bnb.nn.Linear4bit`은 `nn.Linear`의 서브클래스이므로 두 경로의 대상 타입을 하나로
+합치면 안 된다(4bit 경로에서 `lm_head`까지 어댑터가 붙는다).
+
+가중치 자체는 양자화 없이 통째로 올라가므로(8B fp32 기준 약 30GB) 아주 큰 모델은 이
+경로에서도 못 버틸 수 있다 — "4bit이 안 되는 환경"이라는 신호로는 유효하지만 폴백이
+만능은 아니다. 화면 문구도 이 사실만 알린다("양자화 없는 베이스로 실측됨 — VRAM
+수치가 QLoRA 기준보다 크다"). #75 이전에 쓰던 "fp32 전체 모델로 실측됨"은 이제 틀린
+말이다.
+
+폴백 모델도 이제 얼린 베이스를 가지므로 `worker._base_layer_device()`가 정상적으로
+그것을 찾는다. 다만 같은 함수의 **"얼린 파라미터가 하나도 없으면 첫 파라미터의
+device로 물러선다"는 처리는 유지한다**(#66) — 폴백에서 어댑터를 붙일 `nn.Linear`가
+하나도 없거나(그 경우 학습 대상이 0개가 되어 `AdamW([])`가 죽으므로 동결을 되돌린다)
+`import torch`가 죽어 동결을 포기하는 경로가 남아 있어서, 얼린 파라미터가 없는 모델이
+사라진 것은 아니다. 물러섬이 없으면 그런 경우 `device`가 `None`이 되어 화면에
+`device=None`이 찍히고 `judge_result`의 `device=="cpu"` FAIL 규칙도 발동하지 못한다.
 
 4bit 가중치는 uint8로 packed되어 `numel()` 기준 파라미터 수가 실제의 절반으로 보인다
 — 리포트에 파라미터 수를 찍을 일이 있으면 `config`에서 계산해야 한다.
@@ -207,13 +225,18 @@ MVP 범위 밖이라 `device_index=0`(기본 GPU)만 본다.
 
 **`judge_result`로 넘기는 방법**: `run_canary_check()`의 7개 필드 반환 스키마 자체에는
 포함되지 않는다 — 호출한 쪽(cli.py, W12)이 `query_gpu_state()`를 별도로 불러
-`env`에 `gpu_free_mb`·`gpu_total_mb`(둘 다 MB)·`gpu_driver_version` 세 값을 병합한 뒤
-`judge_result()`에 넘긴다. `gpu_total_mb`는 화면(report.py `_vram_line`)이 "X.XGB / Y.YGB
-가용 (총 Z.ZGB)"를 판정과 같은 숫자로 보여주는 데 쓰인다. `gpu_driver_version`은 #82가
-`torch_cpu_only_build`의 `fix_command`가 받을 CUDA 휠 태그를 드라이버에 맞춰 고르려고
-얹은 값이다 — `suggest_fix`가 이 값을 읽어 태그를 정한다(major 브랜치 번호만 보는
-근사 매핑, [ADR-0007](../adr/0007-driver-version-based-torch-cuda-wheel-selection.md)
-참고). 이 값이 없거나 매핑에 없는 값이면 기존 기본값(`cu124`)으로 떨어진다.
+`env`에 `gpu_free_mb`·`gpu_total_mb`(둘 다 MB)·`gpu_driver_version`·`gpu_name` 네 값을
+병합한 뒤 `judge_result()`에 넘긴다. `gpu_total_mb`는 화면(report.py `_vram_line`)이
+"X.XGB / Y.YGB 가용 (총 Z.ZGB)"를 판정과 같은 숫자로 보여주는 데 쓰인다.
+`gpu_driver_version`은 #82가 `torch_cpu_only_build`의 `fix_command`가 받을 CUDA 휠
+태그를 드라이버에 맞춰 고르려고 얹은 값이다 — `suggest_fix`가 이 값을 읽어 태그를
+정한다(major 브랜치 번호만 보는 근사 매핑,
+[ADR-0007](../adr/0007-driver-version-based-torch-cuda-wheel-selection.md) 참고).
+이 값이 없거나 매핑에 없는 값이면 기존 기본값(`cu124`)으로 떨어진다. `gpu_name`은
+#102가 GeForce RTX 50 시리즈(Blackwell, sm_120)를 판별하려고 추가했다 —
+드라이버 기반 매핑이 cu124/cu126을 고르더라도 이 GPU라면 sm_120 커널이 있는
+cu128 이상으로 강제한다([ADR-0009](../adr/0009-blackwell-geforce-cuda-wheel-override.md)
+참고).
 
 ```python
 raw["env"] = {
@@ -221,6 +244,7 @@ raw["env"] = {
     "gpu_free_mb": state["free_mb"],
     "gpu_total_mb": state["total_mb"],
     "gpu_driver_version": state["driver_version"],
+    "gpu_name": state["name"],
 }
 ```
 
@@ -297,6 +321,8 @@ def suggest_fix(check_result: dict) -> dict | None:
 `env`의 속성을 **못 읽은 것**과 그 속성이 **아닌 것**은 다르다 — `torch_version`이 `None`인데 `torch_cuda_version`도 `None`인 것은 "CPU 전용 빌드"가 아니라 "수집 실패"다. 수집 실패를 원인으로 읽으면 멀쩡한 환경에 재설치를 권하게 된다.
 
 **`torch_cpu_only_build`의 `fix_command`는 `env.gpu_driver_version`으로 CUDA 휠 태그를 고른다**(#82). 드라이버 버전 문자열의 major 브랜치 번호만 보는 근사 매핑이다 — 정확한 근거와 표가 어긋나는 조건은 [ADR-0007](../adr/0007-driver-version-based-torch-cuda-wheel-selection.md) 참고. 값이 없거나 매핑에 없으면 기존 기본값(`cu124`)으로 떨어진다.
+
+**단, `env.gpu_name`이 GeForce RTX 50 시리즈(Blackwell)로 판별되면 위 매핑 결과가 `cu124`·`cu126`이어도 `cu128`로 끌어올린다**(#102). cu124·cu126은 애초에 sm_120(Blackwell) 커널을 담고 있지 않아 드라이버를 아무리 올려도 `no kernel image is available for execution on the device`가 재현된다 — 드라이버 recency와 아키텍처 커널 유무는 별개 축이다. `cu130`(드라이버 major≥580)은 이미 더 신규 CUDA라 그대로 둔다. 근거·범위(GeForce RTX 50xx만, 데이터센터 Blackwell 제외)는 [ADR-0009](../adr/0009-blackwell-geforce-cuda-wheel-override.md) 참고.
 
 **`no_nvidia_gpu_or_driver`·`torch_cpu_only_build_no_gpu`·`cuda_device_not_visible`는 `fix_command`가 계속 `None`이다**(#81, #72에서 유보된 판단을 확정). 드라이버 설치는 자동화 등급 D(사람만 실행)이고, GPU가 안 보이는 상태에서 CUDA 빌드 torch를 자동 설치해봐야 아무것도 달라지지 않는다 — 판단 근거는 [ADR-0008](../adr/0008-no-auto-fix-for-user-judgment-causes.md) 참고. `cuda_device_not_visible`만 예외로, 안내 문구에 `env.cuda_visible_devices`의 현재 값을 진단 정보로 덧붙인다(fix_command는 그대로 `None`).
 

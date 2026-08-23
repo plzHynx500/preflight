@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
+from preflight.canary.worker import _PREWRITE_IMPORT_NOTE
 from preflight.cli import app
 from preflight.fix.causes import classify_cause
 from preflight.fix.executor import FixExecutionError, apply_fix, suggest_fix
@@ -254,6 +255,37 @@ def test_no_auto_fix_when_command_cannot_be_decided(cause_env: dict) -> None:
     fix = suggest_fix(_import_crash(cause_env))
 
     assert fix is not None
+
+
+# ── 사전 기록 문구는 원인 분류 시그니처와 겹치면 안 된다 (#93) ─────────────────
+
+
+def test_prewritten_import_crash_does_not_name_a_library() -> None:
+    """네이티브 즉사 결과가 특정 라이브러리 탓으로 분류되지 않는다 (#93).
+
+    `.so` 로드 실패로 프로세스가 즉사하면 자식은 아무것도 쓰지 못하고, 부모는
+    worker가 **미리 써둔 문구**를 그대로 `error_log`로 읽는다. 그 문구에
+    `classify_cause`의 시그니처 문자열(`bitsandbytes` 등)이 들어 있으면
+    **무엇이 죽었든 그 라이브러리 탓**이 된다 — torch의 .so가 죽어도
+    "bitsandbytes를 재설치하라"가 나가고, 그 원인은 `fix_command`를 가진
+    몇 안 되는 원인이라 `--yes`면 무관한 재설치가 실제로 실행된다.
+
+    문구를 그대로 참조한다(복사하지 않는다) — 복사하면 나중에 worker의 문구를
+    바꿔도 이 테스트가 안 깨져서 회귀를 못 잡는다.
+    """
+    result = {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["status_import_crash"],
+        "error_log": _PREWRITE_IMPORT_NOTE,
+        "env": {},
+    }
+
+    assert classify_cause(result) == "import_crash_general"
+
+    fix = suggest_fix(result)
+    assert fix is not None
+    # 원인을 특정하지 못한 상태이므로 --yes가 실행할 명령이 없어야 한다.
     assert fix["fix_command"] is None
     assert fix["fix_argv"] is None
 
@@ -362,6 +394,49 @@ def test_torch_cpu_only_build_picks_cuda_wheel_by_driver_major(
     fix = suggest_fix(res)
     assert fix is not None
     assert fix["fix_command"] is not None
+    assert f"/whl/{expected_tag}" in fix["fix_command"]
+    assert fix["fix_argv"][-1] == f"https://download.pytorch.org/whl/{expected_tag}"
+
+
+@pytest.mark.parametrize(
+    ("gpu_name", "driver_version", "expected_tag"),
+    [
+        # 드라이버 major가 cu126 구간이어도 Blackwell GeForce면 cu128로 끌어올린다
+        # — cu126(CUDA 12.6)에는 sm_120 커널이 아예 없다(#102).
+        ("NVIDIA GeForce RTX 5070 Laptop GPU", "572.13", "cu128"),
+        ("NVIDIA GeForce RTX 5090", "560.76", "cu128"),
+        # 기본값(매핑 밖) 구간도 마찬가지로 끌어올린다.
+        ("NVIDIA GeForce RTX 5060 Ti", "551.61", "cu128"),
+        # 드라이버가 이미 cu130 구간이면 더 최신이라 그대로 둔다 (override 불필요).
+        ("NVIDIA GeForce RTX 5070 Laptop GPU", "595.79", "cu130"),
+        # Blackwell이 아닌 GPU는 기존 드라이버 기반 매핑 그대로.
+        ("NVIDIA GeForce RTX 4070 Ti", "572.13", "cu126"),
+        # 이름이 없거나 조회 실패해도 기존 동작 그대로.
+        (None, "572.13", "cu126"),
+    ],
+)
+def test_torch_cpu_only_build_blackwell_geforce_forces_cu128(
+    gpu_name: str | None, driver_version: str, expected_tag: str
+) -> None:
+    """Blackwell(RTX 50 시리즈) GPU는 드라이버 major 매핑 결과와 무관하게 최소
+
+    cu128을 보장한다 (#102, ADR-0009) — cu124/cu126 빌드는 sm_120 커널이 없어
+    드라이버를 올려도 'no kernel image is available' 오류가 그대로 재현된다.
+    """
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.13.0+cpu",
+            "torch_cuda_version": None,
+            "bnb_compiled_with_cuda": None,
+            "gpu_free_mb": 9595.8,
+            "gpu_total_mb": 12282.0,
+            "gpu_driver_version": driver_version,
+            "gpu_name": gpu_name,
+        }
+    )
+
+    fix = suggest_fix(res)
+    assert fix is not None
     assert f"/whl/{expected_tag}" in fix["fix_command"]
     assert fix["fix_argv"][-1] == f"https://download.pytorch.org/whl/{expected_tag}"
 

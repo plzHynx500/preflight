@@ -44,6 +44,24 @@ Preflight의 핵심 아이디어는 하나입니다 — 상태를 추측하지 �
 
 ---
 
+## 설치
+
+```
+pip install preflight-gpu
+```
+
+설치되는 의존성은 `typer`·`rich`·`nvidia-ml-py` 셋뿐입니다. **torch·transformers·bitsandbytes는 일부러 의존성에 넣지 않습니다** — 이 도구는 사용자 환경에 이미 설치된 버전을 그대로 불러와 검증하는 것이 목적이라, 진단 도구의 설치가 진단 대상을 덮어쓰면 안 되기 때문입니다.
+
+설치 후 `preflight` 명령을 찾지 못하면(venv를 활성화하지 않았거나 `--user`로 설치한 경우 Windows에서 흔합니다) 모듈로 실행하면 됩니다.
+
+```
+python -m preflight check
+```
+
+> **주의** — PyPI에 이름이 비슷한 다른 패키지 `preflight`(웹사이트 배포 점검 도구)가 있고, 그쪽도 `preflight`라는 콘솔 명령을 설치합니다. 둘을 같은 환경에 설치하면 나중에 설치한 쪽이 명령을 덮어씁니다. 이 도구의 패키지 이름은 **`preflight-gpu`** 입니다.
+
+---
+
 ## 언제 쓰나요 — 학습 명령어 실행 직전
 
 `git commit` 전에 `git status`를 확인하는 것처럼, 학습을 시작하기 전 한 줄이면 됩니다. 설치 직후, 드라이버 업데이트 직후, 팀 온보딩·CI 스크립트에 넣어두는 것을 권장합니다.
@@ -100,7 +118,8 @@ Preflight는 CI/CD 파이프라인이나 자동화 스크립트에서 프로그�
 |---|---|
 | 라이선스 | MIT — 재배포·임베딩 제약 없음 |
 | 지원 플랫폼 | Linux, Windows (네이티브) |
-| 설치 | `pip install preflight-gpu` |
+| 설치 | `pip install preflight-gpu` (실행 명령은 `preflight`) |
+| 실행 | `preflight check` — 명령을 못 찾으면 `python -m preflight check` |
 
 ---
 

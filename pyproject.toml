@@ -41,6 +41,18 @@ preflight = "preflight.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["src/preflight"]
 
+[tool.hatch.build.targets.sdist]
+# 에이전트 도구 설정·CI·개발 스크립트는 배포본에 넣지 않는다 — 진단 도구를 받는
+# 사람에게 쓸모가 없고 용량만 늘린다(#65). tests/·docs/는 관례대로 남긴다.
+exclude = [
+    ".agents/",
+    ".github/",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    "scripts/",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # network 마커 테스트는 기본 실행에서 제외한다 — HuggingFace Hub에서 config.json을

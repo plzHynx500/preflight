@@ -434,7 +434,7 @@ def test_render_report_model_mode_shows_vram_not_quant_line(capsys) -> None:
 def test_render_report_model_mode_shows_quant_fallback_line(capsys) -> None:
     """--model 모드에서도 4bit 폴백 사실은 화면에 나온다 (#66).
 
-    폴백이면 VRAM 실측값이 QLoRA가 아니라 fp32 전체 모델 기준이라 훨씬 크게
+    폴백이면 VRAM 실측값이 QLoRA(4bit) 기준이 아니라 양자화 없는 베이스 기준이라 크게
     나온다 — 그 전제를 안 알려주면 사용자는 "이 GPU로는 무리"라는 정반대
     결론을 낸다. 판정 줄이 아니므로 문제 개수에는 들어가지 않는다.
     """
@@ -445,7 +445,9 @@ def test_render_report_model_mode_shows_quant_fallback_line(capsys) -> None:
 
     out = capsys.readouterr().out
     assert "4bit 레이어 폴백" in out
-    assert "fp32 전체 모델로 실측됨" in out
+    assert "양자화 없는 베이스로 실측됨" in out
+    # #75에서 폴백이 전체 파인튜닝을 그만뒀으므로 옛 문구는 남아 있으면 안 된다.
+    assert "fp32 전체 모델" not in out
     assert "VRAM 실측" in out
     assert "문제 없음" in out
 

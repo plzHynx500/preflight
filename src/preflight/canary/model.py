@@ -24,6 +24,10 @@ MINIMAL_ADAPTER_RANK = 16
 QUANT_BACKEND_4BIT = "bnb-4bit"
 QUANT_BACKEND_FALLBACK = "nn-linear-fallback"
 
+# 4bit 변환에서 빼는 레이어. 폴백의 LoRA 부착도 같은 목록을 쓴다 — 두 경로가 "베이스로
+# 취급하는 레이어"의 범위를 다르게 잡으면 폴백이 재는 대상이 4bit 경로와 달라진다(#75).
+_MODULES_NOT_CONVERTED = ("lm_head",)
+
 
 def build_dummy_model(model_name: str, device: str = "cuda"):
     """`--model` 경로용 랜덤 초기화 모델을 구성한다.
@@ -57,13 +61,23 @@ def build_dummy_model(model_name: str, device: str = "cuda"):
     구현 스케치는 PR #12 리뷰 코멘트 참고.
 
     4bit 구성이 실패하면(bitsandbytes 미설치·구버전 등) `build_minimal_canary_model`과
-    동일한 폴백 철학으로 평범한 fp32 전체 모델로 대체하고 그 사실을 `quant_backend`로
-    알린다 — 실패해도 여기서 죽지 않는다. **폴백 모델도 `device`가 가리키는 곳으로
-    올린다**(#66) — 안 올리면 입력과 device가 어긋나 폴백이 발동하는 순간 오히려
-    RuntimeError로 죽어, 안전장치가 없는 것과 같아진다. 단 폴백 시 fp32 전체 모델이
-    RAM/VRAM에 통째로 올라가므로(8B 기준 약 30GB), 실제로 이 경로를 타는 대형 모델은
-    canary 도구 자체가 먼저 죽을 수 있다 — 이는 "4bit이 안 되는 환경"이라는 신호로서는
-    유효하지만, 쾌적하게 죽지는 않는다는 뜻이다(별도 개선 여지, 지금 범위 밖).
+    동일한 폴백 철학으로 베이스를 평범한 `nn.Linear`로 대체하고 그 사실을
+    `quant_backend`로 알린다 — 실패해도 여기서 죽지 않는다. **폴백 모델도 `device`가
+    가리키는 곳으로 올린다**(#66) — 안 올리면 입력과 device가 어긋나 폴백이 발동하는
+    순간 오히려 RuntimeError로 죽어, 안전장치가 없는 것과 같아진다.
+
+    **폴백도 QLoRA의 *모양*은 유지한다(#75)** — 베이스를 얼리고(`requires_grad_(False)`)
+    LoRA 어댑터만 학습 대상으로 붙인다. 양자화(4bit)는 bitsandbytes 없이 못 하지만
+    "베이스는 얼고 어댑터만 학습한다"는 부분은 torch만으로 된다. 안 그러면 폴백이 fp32
+    **전체 파인튜닝**이 되어 파라미터당 16바이트(가중치 4 + gradient 4 + AdamW 상태 8)가
+    들고 — 8B급이면 약 128GB — 위 "QLoRA는 옵션이 아니라 고정 가정"과 정면으로 어긋난다.
+    즉 폴백이 발동하는 순간 진단이 재는 대상 자체가 사용자의 계획과 달라진다. 얼리면
+    gradient·옵티마이저 상태가 어댑터에만 붙어 파라미터당 약 4바이트(fp32 가중치)로
+    내려간다.
+
+    가중치 자체는 여전히 fp32로 통째로 올라가므로(8B 기준 약 30GB) 아주 큰 모델은
+    이 경로에서도 못 버틸 수 있다 — "4bit이 안 되는 환경"이라는 신호로는 유효하지만,
+    폴백이 만능은 아니라는 뜻이다.
 
     `(model, config, quant_backend)`를 돌려준다 — `config`는 `build_dummy_input()`이
     토큰 ID를 만들 때 필요한 `vocab_size`를 담고 있고(docs/contracts/canary-api.md
@@ -149,7 +163,10 @@ def _config_error_message(model_name: str, exc: Exception) -> str | None:
 
 
 def _build_qlora_model(config, device: str):
-    """4bit 양자화 + LoRA 어댑터가 적용된 랜덤 초기화 모델. 실패하면 fp32로 폴백.
+    """4bit 양자화 + LoRA 어댑터가 적용된 랜덤 초기화 모델.
+
+    실패하면 **얼린 `nn.Linear` 베이스 + LoRA**로 폴백한다 — 양자화만 빠지고 "베이스는
+    얼고 어댑터만 학습한다"는 모양은 그대로다(#75).
 
     `replace_with_bnb_linear`는 `transformers.integrations.bitsandbytes`의 **비공개
     API**다 — transformers 버전을 올릴 때 이 함수의 존재/시그니처를 확인해야 한다
@@ -163,10 +180,13 @@ def _build_qlora_model(config, device: str):
         return _materialize_qlora(
             config, device, torch, AutoModelForCausalLM, replace_with_bnb_linear
         )
-    except Exception:  # noqa: BLE001 - 실패 종류와 무관하게 fp32 폴백한다
+    except Exception:  # noqa: BLE001 - 실패 종류와 무관하게 nn.Linear 폴백한다
         from transformers import AutoModelForCausalLM
 
         model = AutoModelForCausalLM.from_config(config)
+        # 베이스를 얼리고 LoRA만 붙여 QLoRA의 모양을 유지한다(#75). 어댑터는 아직
+        # CPU에 만들어지고, 바로 아래 .to(device)가 베이스와 함께 옮긴다.
+        _freeze_base_and_attach_lora(model)
         # 폴백 모델도 **요청받은 device로 올린다**. 빼먹으면 모델만 CPU에 남아,
         # 같은 device로 만들어진 입력(cuda)과 어긋나 forward에서 RuntimeError로
         # 죽는다 — 폴백은 "bitsandbytes가 없어도 진단은 계속한다"는 안전장치인데
@@ -178,6 +198,44 @@ def _build_qlora_model(config, device: str):
         # 자체가 같은 이유로 죽는다. nn.Module.to()는 문자열을 그대로 받는다.
         model = model.to(device)
         return model, QUANT_BACKEND_FALLBACK
+
+
+def _freeze_base_and_attach_lora(model) -> bool:
+    """폴백 모델의 베이스 `nn.Linear`를 얼리고 LoRA 어댑터만 학습 대상으로 붙인다(#75).
+
+    4bit 경로가 `_materialize_qlora` 끝에서 하는 일과 같고, 대상 타입만
+    `Linear4bit` → `nn.Linear`로 넓힌 것이다. 양자화는 bitsandbytes 없이 못 하지만
+    "베이스는 얼고 어댑터만 학습한다"는 부분은 torch만으로 되므로, 폴백에서도 실제
+    학습이 타는 연산 경로를 그대로 태울 수 있다.
+
+    **`import torch`가 죽어도 여기서 폴백을 깨뜨리지 않는다.** 이 함수를 부르는
+    분기는 `import torch` 실패로도 들어올 수 있어서, 실패하면 동결을 되돌리고
+    조용히 물러선다 — 안전장치가 안전장치를 부수면 안 된다.
+
+    **어댑터가 하나도 안 붙으면 동결을 되돌린다.** 학습 대상이 0개인 모델을 넘기면
+    `worker._execute_canary_cycle`의 `AdamW([])`가
+    `ValueError: optimizer got an empty parameter list`로 죽어, 메모리를 아끼려다
+    진단 자체를 잃는다.
+
+    실제로 얼렸는지를 bool로 돌려준다.
+    """
+    try:
+        import torch
+
+        for param in model.parameters():
+            param.requires_grad_(False)
+        attached = _attach_manual_lora(
+            model, torch, torch.nn.Linear, skip_names=_MODULES_NOT_CONVERTED
+        )
+    except Exception:  # noqa: BLE001 - 폴백의 폴백이라 실패해도 진단은 계속한다
+        attached = 0
+
+    if attached:
+        return True
+
+    for param in model.parameters():
+        param.requires_grad_(True)
+    return False
 
 
 def _materialize_qlora(config, device, torch, AutoModelForCausalLM, replace_with_bnb_linear):
@@ -199,7 +257,9 @@ def _materialize_qlora(config, device, torch, AutoModelForCausalLM, replace_with
         bnb_4bit_compute_dtype=torch.float16,
     )
     model = replace_with_bnb_linear(
-        model, modules_to_not_convert=["lm_head"], quantization_config=bnb_config
+        model,
+        modules_to_not_convert=list(_MODULES_NOT_CONVERTED),
+        quantization_config=bnb_config,
     )
 
     import bitsandbytes as bnb
@@ -230,7 +290,7 @@ def _materialize_qlora(config, device, torch, AutoModelForCausalLM, replace_with
     for param in model.parameters():
         param.requires_grad_(False)
 
-    _attach_manual_lora(model, bnb, torch, device)
+    _attach_manual_lora(model, torch, bnb.nn.Linear4bit, dtype=torch.float16, device=device)
     return model, QUANT_BACKEND_4BIT
 
 
@@ -244,7 +304,13 @@ class _LoraAdapter:
     """
 
     def __init__(
-        self, torch_module, in_features: int, out_features: int, rank: int, dtype, device: str
+        self,
+        torch_module,
+        in_features: int,
+        out_features: int,
+        rank: int,
+        dtype,
+        device: str | None = None,
     ):
         self.down = torch_module.nn.Linear(
             in_features, rank, bias=False, dtype=dtype, device=device
@@ -256,26 +322,44 @@ class _LoraAdapter:
         return output + self.up(self.down(inputs[0]))
 
 
-def _attach_manual_lora(model, bnb, torch, device: str) -> None:
-    """모든 Linear4bit에 LoRA 어댑터를 forward hook으로 붙인다.
+def _attach_manual_lora(
+    model, torch, target_cls, dtype=None, device: str | None = None, skip_names=()
+) -> int:
+    """`target_cls`인 레이어마다 LoRA 어댑터를 forward hook으로 붙이고 그 개수를 돌려준다.
 
-    어댑터를 각 Linear4bit의 서브모듈로 등록해야(`add_module`) `model.parameters()`로
+    어댑터를 각 대상 레이어의 서브모듈로 등록해야(`add_module`) `model.parameters()`로
     순회할 때 잡힌다 — worker.py의 optimizer 구성(`[p for p in model.parameters()
     if p.requires_grad]`, 기본 체크와 동일 패턴)이 이 값을 그대로 찾아 쓴다.
+
+    대상 타입을 인자로 받는 이유는 4bit 경로(`Linear4bit`)와 폴백 경로(`nn.Linear`)가
+    같은 부착 로직을 쓰기 때문이다(#75). **두 타입을 하나로 합치면 안 된다** —
+    `bnb.nn.Linear4bit`은 `nn.Linear`의 서브클래스라, 4bit 경로를 `nn.Linear`로 훑으면
+    변환 대상에서 뺀 `lm_head`에까지 어댑터가 붙는다.
+
+    **대상 목록을 먼저 확정한 뒤 부착한다.** `lora_down`/`lora_up`도 `nn.Linear`라,
+    순회하면서 붙이면 방금 만든 어댑터에 또 어댑터가 붙는다.
+
+    `dtype=None`이면 각 대상의 `weight.dtype`을 따른다 — 폴백 모델은 fp32라 4bit
+    경로처럼 float16으로 고정하면 hook이 받는 입력과 dtype이 어긋난다.
     """
-    for module in model.modules():
-        if isinstance(module, bnb.nn.Linear4bit):
-            adapter = _LoraAdapter(
-                torch,
-                module.in_features,
-                module.out_features,
-                MINIMAL_ADAPTER_RANK,
-                torch.float16,
-                device,
-            )
-            module.add_module("lora_down", adapter.down)
-            module.add_module("lora_up", adapter.up)
-            module.register_forward_hook(adapter)
+    targets = [
+        module
+        for name, module in model.named_modules()
+        if isinstance(module, target_cls) and name.rsplit(".", 1)[-1] not in skip_names
+    ]
+    for module in targets:
+        adapter = _LoraAdapter(
+            torch,
+            module.in_features,
+            module.out_features,
+            MINIMAL_ADAPTER_RANK,
+            module.weight.dtype if dtype is None else dtype,
+            device,
+        )
+        module.add_module("lora_down", adapter.down)
+        module.add_module("lora_up", adapter.up)
+        module.register_forward_hook(adapter)
+    return len(targets)
 
 
 def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int, device: str):

@@ -44,9 +44,21 @@ STATUS_ERROR = "error"
 DEFAULT_BATCH_SIZE = 1
 DEFAULT_SEQ_LEN = 8
 
+#: 즉사(SIGSEGV)하면 자식은 아무것도 쓰지 못하고, 부모는 **이 문구를 그대로**
+#: `error_log`로 읽는다. 그래서 이 문구는 사용자에게 보이는 안내인 동시에 원인
+#: 분류의 입력이기도 하다.
+#:
+#: **여기에 라이브러리 이름을 적으면 안 된다.** `fix/causes.py`가 `error_log`에서
+#: 시그니처 문자열(`bitsandbytes` 등)을 찾아 원인을 정하는데, 이 문구에 그 단어가
+#: 들어 있으면 **무엇이 죽었든 그 라이브러리 탓으로 분류된다** — torch의 .so가
+#: 죽어도 "bitsandbytes를 재설치하라"가 나가고 `--yes`면 실제로 실행된다(#93).
+#:
+#: 어느 import에서 죽었는지는 문구가 아니라 `env`가 어디까지 채워졌는지로 알아야
+#: 한다(#93의 후속안 A). 지금은 그 값이 없으므로 **원인을 단정하지 않는 것**이
+#: 목적이다 — 틀린 답보다 "모르겠다"가 낫다.
 _PREWRITE_IMPORT_NOTE = (
-    "canary 스택(torch/bitsandbytes)을 import하는 도중 프로세스가 예외 없이 종료됐다. "
-    "CUDA 라이브러리 .so 로드 실패로 인한 즉사가 대표적인 경우다."
+    "학습 스택을 import하는 도중 프로세스가 예외 없이 종료됐다. "
+    "네이티브 라이브러리(.so/.dll) 로드 실패로 인한 즉사가 대표적인 경우다."
 )
 _PREWRITE_RUN_NOTE = (
     "canary 실행 도중 프로세스가 예외 없이 종료됐다. import는 통과한 상태였다. "
@@ -562,11 +574,15 @@ def _base_layer_device(model):
     "4bit 레이어 device=cpu 감지"가 판정 항목이므로 모델 전체가 아니라 베이스
     레이어를 직접 본다.
 
-    얼린 파라미터가 하나도 없으면 **첫 파라미터의 device**로 물러선다. `--model`
-    경로의 fp32 폴백 모델(`AutoModelForCausalLM.from_config`)은 베이스를 얼리지도
-    LoRA를 붙이지도 않아 전부 `requires_grad=True`라, 원래대로면 None이 나갔다 —
-    화면에 `device=None`이 찍히고, 진짜 CPU에 있어도 judge의 `device=="cpu"` FAIL
-    규칙이 발동하지 못한다(#66). 파라미터가 아예 없는 모델만 None이다.
+    얼린 파라미터가 하나도 없으면 **첫 파라미터의 device**로 물러선다. 원래대로면
+    그런 모델에서 None이 나가, 화면에 `device=None`이 찍히고 진짜 CPU에 있어도
+    judge의 `device=="cpu"` FAIL 규칙이 발동하지 못했다(#66).
+
+    이 물러섬을 만든 원인이던 `--model` 경로의 폴백 모델은 #75에서 베이스를 얼리게
+    되어 이제 정상적으로 얼린 베이스를 찾는다. 그래도 물러섬은 남겨둔다 — 폴백에서
+    LoRA를 붙일 대상 `nn.Linear`가 하나도 없거나 `import torch`가 죽어 동결을
+    되돌리는 경로가 여전히 있어서, "얼린 파라미터가 없는 모델"이 사라진 것은 아니다.
+    파라미터가 아예 없는 모델만 None이다.
     """
     first_device = None
     for param in model.parameters():

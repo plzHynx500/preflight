@@ -36,6 +36,7 @@ def reverify(model_name: str | None, batch_size: int, seq_len: int) -> dict:
             "gpu_free_mb": state["free_mb"],
             "gpu_total_mb": state["total_mb"],
             "gpu_driver_version": state["driver_version"],
+            "gpu_name": state["name"],
         }
 
     return judge_result(raw)
