@@ -634,3 +634,42 @@ def test_python_dash_m_preflight_runs() -> None:
     assert "UnicodeEncodeError" not in result.stderr
     assert "check" in _strip_ansi(result.stdout)
     assert "cannot be directly executed" not in result.stderr
+
+
+def test_seq_len_cause_reads_seq_len_from_cli_meta() -> None:
+    """`--seq-len` 인자가 meta 병합을 거쳐 `classify_cause`까지 도달한다 (#86).
+
+    **배선을 지키는 테스트다.** `classify_cause`는 `seq_len`을 결과의 최상위에서
+    읽는데, 그 값을 넣어주는 건 canary가 아니라 `cli.py`의 meta 병합
+    (`results.append({**model_res, **meta})`)뿐이다. 병합보다 `suggest_fix`를 먼저
+    부르도록 순서가 바뀌면 `seq_len`이 없어 `unknown_error`로 돌아가는데,
+    **에러가 나지 않아 조용히 죽는다** — 단위 테스트는 dict를 손으로 만들어 넣으므로
+    그대로 통과한다.
+
+    그래서 여기서는 1024를 손으로 넣지 않고 **CLI 인자로 준다.**
+    """
+    model_fail = {
+        "status": "error",
+        "device": "cuda",
+        "verdict": "FAIL",
+        "reasons": ["status_error"],
+        "error_log": "torch.AcceleratorError: CUDA error: device-side assert triggered",
+        "env": {"model_max_position": 512},
+    }
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", return_value={"status": "ok"}),
+        patch(
+            "preflight.cli.judge_result",
+            side_effect=[{"status": "ok", "verdict": "PASS", "reasons": []}, model_fail],
+        ),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        runner.invoke(app, ["check", "--model", "dummy/model", "--seq-len", "1024"])
+
+    results = mock_render.call_args[0][0]
+    fix = results[1]["fix"]
+    assert fix["cause"] == "seq_len_exceeds_model_max", results[1]
+    # 준 값과 허용 최대값이 둘 다 문구에 있어야 사용자가 얼마로 줄일지 안다.
+    assert "1024" in fix["message"] and "512" in fix["message"], fix["message"]

@@ -255,6 +255,15 @@ _FIX_MAP: dict[str, tuple[str, list[str] | None]] = {
         "QLoRA 학습에 필요한 라이브러리가 설치되어 있지 않습니다",
         None,
     ),
+    # 실제 문구는 suggest_fix()가 env.model_max_position과 seq_len으로 숫자를 채워
+    # 만든다 — 여기 값은 그 둘을 못 읽었을 때의 폴백이다.
+    #
+    # fix_command는 None이다. 고칠 대상이 패키지가 아니라 **사용자가 준 인자**라
+    # --yes가 자동으로 실행할 것이 없다(ADR-0008: 사용자 판단이 필요한 원인).
+    "seq_len_exceeds_model_max": (
+        "--seq-len이 모델의 최대 길이를 넘습니다 — 더 작은 값으로 지정하세요",
+        None,
+    ),
     "unknown_error": ("Canary 실행 오류 (설정 또는 환경 확인 필요)", None),
     "unknown": ("알 수 없는 이상 진단 결과", None),
 }
@@ -328,6 +337,11 @@ def suggest_fix(check_result: dict) -> dict | None:
         assembled = _qlora_stack_fix(check_result.get("env") or {})
         if assembled is not None:
             message, args = assembled
+    if cause == "seq_len_exceeds_model_max":
+        env = check_result.get("env") or {}
+        note = _seq_len_note(check_result.get("seq_len"), env.get("model_max_position"))
+        if note is not None:
+            message = note
     if cause == "cuda_device_not_visible":
         env = check_result.get("env") or {}
         message = f"{message} ({_cuda_visible_devices_note(env.get('cuda_visible_devices'))})"
@@ -369,6 +383,20 @@ def _qlora_stack_fix(env: dict) -> tuple[str, list[str]] | None:
         " — 이 상태로 시작하면 ImportError로 즉시 종료됩니다"
     )
     return message, ["-m", "pip", "install", "-U", *missing]
+
+
+def _seq_len_note(seq_len, max_position) -> str | None:
+    """실제 숫자를 넣은 안내. 둘 중 하나라도 못 읽으면 None(폴백 문구를 쓴다).
+
+    **준 값과 허용 최대값을 함께 보여준다** — "너무 큽니다"만으로는 얼마로
+    줄여야 하는지 모른다. 사용자가 바로 다시 실행할 수 있는 숫자를 준다(#86).
+    """
+    if not isinstance(seq_len, int) or not isinstance(max_position, int):
+        return None
+    return (
+        f"seq_len({seq_len})이 모델의 최대 길이({max_position})를 넘습니다"
+        f" — --seq-len을 {max_position} 이하로 지정하세요"
+    )
 
 
 def apply_fix(fix: dict) -> None:

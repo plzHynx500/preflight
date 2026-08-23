@@ -14,6 +14,12 @@ from __future__ import annotations
 # `libbitsandbytes_cpu.so` 같은 파일명도 이 부분문자열에 걸린다.
 _BNB_IMPORT_SIGNATURE = "bitsandbytes"
 
+# 위치 임베딩 인덱스가 범위를 벗어나면 GPU 커널 안에서 assert가 터진다. 트레이스백은
+# 실제 위치를 안 가리키고("stacktrace below might be incorrect"라고 로그가 스스로
+# 경고한다) 문구도 torch 버전에 따라 달라질 수 있어, **이 문자열 하나로 단정하지
+# 않는다** — `seq_len > model_max_position`이라는 수치 근거를 함께 본다(#86).
+_DEVICE_ASSERT_SIGNATURE = "device-side assert"
+
 
 def classify_cause(check_result: dict) -> str:
     """Canary check_result 딕셔너리에서 가장 중요한 대표 원인(cause code)을 분류한다.
@@ -57,6 +63,8 @@ def classify_cause(check_result: dict) -> str:
 
     # 5. status == "error"
     if status == "error":
+        if _is_seq_len_over_model_max(check_result, error_log):
+            return "seq_len_exceeds_model_max"
         # 모델 체크가 쓰는 transformers는 `_import_canary_stack()`이 아니라 `_run()`
         # 안에서 import된다 — 없으면 `import_crash`가 아니라 여기로 떨어진다(실측).
         # 설치 여부는 같은 방식으로 판정한다.
@@ -75,6 +83,34 @@ def classify_cause(check_result: dict) -> str:
         return "cpu_multiplier_low"
 
     return "unknown"
+
+
+def _is_seq_len_over_model_max(check_result: dict, error_log: str) -> bool:
+    """`--seq-len`이 모델의 최대 위치 길이를 넘겨 커널 assert로 죽었는가.
+
+    **사전 차단이 아니라 사후 분류다.** 초과가 실제로 터지는지는 모델의 위치
+    인코딩 방식에 달렸다 — GPT-2·BERT처럼 위치마다 한 행인 `nn.Embedding`
+    테이블이면 범위 밖 읽기가 되어 죽지만, RoPE(Llama·Mistral·Qwen)나
+    ALiBi(BLOOM·MPT)는 테이블이 없어 **정상 동작한다**. 속성 이름으로는 둘을
+    구분할 수 없다(transformers 5.x는 GPT-2도 `max_position_embeddings`를 쓴다).
+
+    그래서 config 값만 보고 미리 막으면 **멀쩡히 도는 경우까지 막는다.** RoPE
+    모델은 초과해도 죽지 않고 attention이 O(n²)이라 VRAM으로 터져 `status_oom`
+    으로 이미 정확히 분류된다 — 사전 차단은 그 옳은 판정을 덮어쓴다(#86).
+
+    **두 근거가 모두 있을 때만 단정한다** — 커널 assert 시그니처와 수치 초과.
+    다른 이유의 device-side assert를 이 원인으로 가로채면 #51·#93과 같은
+    부류의 오분류가 된다.
+    """
+    if _DEVICE_ASSERT_SIGNATURE not in error_log.lower():
+        return False
+
+    max_position = (check_result.get("env") or {}).get("model_max_position")
+    seq_len = check_result.get("seq_len")
+    if not isinstance(max_position, int) or not isinstance(seq_len, int):
+        # 둘 중 하나라도 못 읽었으면 단정하지 않는다.
+        return False
+    return seq_len > max_position
 
 
 def _classify_missing_library(env: dict) -> str | None:
