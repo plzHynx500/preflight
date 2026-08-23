@@ -53,6 +53,7 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
     "torch_cuda_version": "12.8",       # None이면 torch가 CPU 전용 빌드
     "bnb_compiled_with_cuda": True,     # 빌드 속성이 아니다 — 아래 경고 참고
     "bnb_cpu_4bit_supported": True,     # 4bit을 실제로 시도한 경우에만. 아니면 None
+    "cuda_visible_devices": None,       # os.environ["CUDA_VISIBLE_DEVICES"] 원문. 없으면 None
 }
 ```
 
@@ -63,6 +64,8 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 > 구버전 bitsandbytes에서는 진짜 빌드 속성이었을 가능성이 있다. 그렇다면 이 값은 **버전에 따라 뜻이 달라지는 신호**라는 뜻이므로, 단독 판단 근거로 쓰지 않는다는 결론은 어느 쪽이든 같다.
 
 **자식이 읽어야 한다.** 이 값들을 읽으려면 `torch`·`bitsandbytes`를 import해야 하는데, 진단 대상이 바로 *"그 import가 죽는 환경"* 이다. 부모가 읽으면 원인을 확인하려다 CLI까지 함께 죽어 FR-03 격리가 무너진다([ADR-0002](../adr/0002-subprocess-isolation-for-canary.md), Issue #19).
+
+> `cuda_visible_devices`만 예외다 — `os.environ.get()`은 import가 아니므로 실패할 수 없고, import 성패와 무관하게 항상 값(또는 `None`)이 채워진다. 그래도 자식이 채우는 이유는 그 값을 봐야 할 순간이 정확히 "자식이 본 CUDA 장치 가시성"이라서다(ADR-0008).
 
 항목은 **독립적으로 실패**할 수 있고, 실패한 항목만 `None`이 된다. `status == "import_crash"`여서 아무 속성도 못 읽은 경우에도 **키는 유지한 채 값만 전부 `None`인 dict**가 온다 — 소비자가 키 존재 여부까지 따로 방어하지 않게 하기 위함이다. 이때 속성을 다시 읽으려 시도하지는 않는다(방금 실패한 import를 반복할 뿐이다).
 
@@ -281,6 +284,8 @@ def suggest_fix(check_result: dict) -> dict | None:
 `env`의 속성을 **못 읽은 것**과 그 속성이 **아닌 것**은 다르다 — `torch_version`이 `None`인데 `torch_cuda_version`도 `None`인 것은 "CPU 전용 빌드"가 아니라 "수집 실패"다. 수집 실패를 원인으로 읽으면 멀쩡한 환경에 재설치를 권하게 된다.
 
 **`torch_cpu_only_build`의 `fix_command`는 `env.gpu_driver_version`으로 CUDA 휠 태그를 고른다**(#82). 드라이버 버전 문자열의 major 브랜치 번호만 보는 근사 매핑이다 — 정확한 근거와 표가 어긋나는 조건은 [ADR-0007](../adr/0007-driver-version-based-torch-cuda-wheel-selection.md) 참고. 값이 없거나 매핑에 없으면 기존 기본값(`cu124`)으로 떨어진다.
+
+**`no_nvidia_gpu_or_driver`·`torch_cpu_only_build_no_gpu`·`cuda_device_not_visible`는 `fix_command`가 계속 `None`이다**(#81, #72에서 유보된 판단을 확정). 드라이버 설치는 자동화 등급 D(사람만 실행)이고, GPU가 안 보이는 상태에서 CUDA 빌드 torch를 자동 설치해봐야 아무것도 달라지지 않는다 — 판단 근거는 [ADR-0008](../adr/0008-no-auto-fix-for-user-judgment-causes.md) 참고. `cuda_device_not_visible`만 예외로, 안내 문구에 `env.cuda_visible_devices`의 현재 값을 진단 정보로 덧붙인다(fix_command는 그대로 `None`).
 
 ## 전체 흐름
 
