@@ -262,6 +262,49 @@ def test_torch_cpu_only_build_picks_cuda_wheel_by_driver_major(
     assert fix["fix_argv"][-1] == f"https://download.pytorch.org/whl/{expected_tag}"
 
 
+@pytest.mark.parametrize(
+    ("gpu_name", "driver_version", "expected_tag"),
+    [
+        # 드라이버 major가 cu126 구간이어도 Blackwell GeForce면 cu128로 끌어올린다
+        # — cu126(CUDA 12.6)에는 sm_120 커널이 아예 없다(#102).
+        ("NVIDIA GeForce RTX 5070 Laptop GPU", "572.13", "cu128"),
+        ("NVIDIA GeForce RTX 5090", "560.76", "cu128"),
+        # 기본값(매핑 밖) 구간도 마찬가지로 끌어올린다.
+        ("NVIDIA GeForce RTX 5060 Ti", "551.61", "cu128"),
+        # 드라이버가 이미 cu130 구간이면 더 최신이라 그대로 둔다 (override 불필요).
+        ("NVIDIA GeForce RTX 5070 Laptop GPU", "595.79", "cu130"),
+        # Blackwell이 아닌 GPU는 기존 드라이버 기반 매핑 그대로.
+        ("NVIDIA GeForce RTX 4070 Ti", "572.13", "cu126"),
+        # 이름이 없거나 조회 실패해도 기존 동작 그대로.
+        (None, "572.13", "cu126"),
+    ],
+)
+def test_torch_cpu_only_build_blackwell_geforce_forces_cu128(
+    gpu_name: str | None, driver_version: str, expected_tag: str
+) -> None:
+    """Blackwell(RTX 50 시리즈) GPU는 드라이버 major 매핑 결과와 무관하게 최소
+
+    cu128을 보장한다 (#102, ADR-0009) — cu124/cu126 빌드는 sm_120 커널이 없어
+    드라이버를 올려도 'no kernel image is available' 오류가 그대로 재현된다.
+    """
+    res = _cpu_fallback(
+        {
+            "torch_version": "2.13.0+cpu",
+            "torch_cuda_version": None,
+            "bnb_compiled_with_cuda": None,
+            "gpu_free_mb": 9595.8,
+            "gpu_total_mb": 12282.0,
+            "gpu_driver_version": driver_version,
+            "gpu_name": gpu_name,
+        }
+    )
+
+    fix = suggest_fix(res)
+    assert fix is not None
+    assert f"/whl/{expected_tag}" in fix["fix_command"]
+    assert fix["fix_argv"][-1] == f"https://download.pytorch.org/whl/{expected_tag}"
+
+
 def test_classify_cpu_only_torch_build_without_nvidia_gpu() -> None:
     """#55의 QA 환경(CPU 전용 torch + NVIDIA GPU 없음) — 원인은 CPU 빌드,
     다만 GPU가 없으니 CUDA torch를 자동으로 받아봐야 달라지는 게 없다.
