@@ -59,6 +59,7 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
     "bitsandbytes_installed": False,    # False면 "설치 안 됨" 확정. None은 "못 읽음"
     "peft_installed": True,             # canary는 안 쓰지만 사용자 학습엔 필요하다
     "accelerate_installed": True,       # peft가 하드 의존성으로 끌고 온다
+    "model_max_position": 512,          # --model 모드에서만. 못 읽으면 None
 }
 ```
 
@@ -73,6 +74,8 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 > `cuda_visible_devices`만 예외다 — `os.environ.get()`은 import가 아니므로 실패할 수 없고, import 성패와 무관하게 항상 값(또는 `None`)이 채워진다. 그래도 자식이 채우는 이유는 그 값을 봐야 할 순간이 정확히 "자식이 본 CUDA 장치 가시성"이라서다(ADR-0008).
 
 항목은 **독립적으로 실패**할 수 있고, 실패한 항목만 `None`이 된다. 키는 **어느 경우에도 유지된다** — 소비자가 키 존재 여부까지 따로 방어하지 않게 하기 위함이다.
+
+**`model_max_position`은 `--model` 모드에서 config를 읽은 뒤에만 채워진다.** 기본 체크나 config에 해당 속성(`max_position_embeddings` / `n_positions` / `max_seq_len`)이 하나도 없는 모델에서는 `None`이다 — **`None`은 "제한 없음"이 아니라 "모름"이다.** `seq_len`이 이 값을 넘으면 위치 인코딩이 테이블 방식인 모델(GPT-2·BERT 계열)만 커널 assert로 죽고, RoPE·ALiBi 계열은 정상 동작한다 — 그래서 부모는 **사전 차단하지 않고**, 실제로 죽었을 때 커널 assert 시그니처와 이 수치를 함께 보고 원인을 특정한다(#86).
 
 **`*_installed`가 담는 것은 canary가 쓰는 라이브러리가 아니라 사용자의 QLoRA 학습에 필요한 라이브러리다.** canary는 `peft` 없이 LoRA 어댑터를 직접 만들고 `from_pretrained`를 안 타서 `accelerate`도 거치지 않지만, 사용자는 둘 다 있어야 학습이 돈다 — 우리가 우회한 만큼이 진단의 사각지대가 되지 않도록 함께 담는다(#117).
 
