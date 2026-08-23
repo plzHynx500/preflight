@@ -1,5 +1,7 @@
 """판정 기준은 docs/contracts/canary-api.md 참고."""
 
+import pytest
+
 from preflight.canary.judge import judge_result
 
 _OK_RAW = {
@@ -214,3 +216,59 @@ def test_device_cpu_fail_combined_with_unrelated_warn() -> None:
     assert result["verdict"] == "FAIL"
     assert "quant_layer_device_cpu" in result["reasons"]
     assert "cpu_multiplier_low" in result["reasons"]
+
+
+# --- QLoRA 스택 미설치는 WARN 이다 (#117) ---
+
+
+def _fallback_raw(env: dict) -> dict:
+    return {
+        "status": "ok",
+        "device": "cuda",
+        "quant_backend": "nn-linear-fallback",
+        "env": env,
+    }
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"bitsandbytes_installed": False, "peft_installed": True},
+        {"bitsandbytes_installed": True, "peft_installed": False},
+        {"bitsandbytes_installed": False, "peft_installed": False},
+    ],
+)
+def test_missing_qlora_stack_is_warn_not_pass(env: dict) -> None:
+    """설치가 안 됐으면 PASS 를 내주지 않는다 (#117).
+
+    canary 는 bitsandbytes 없이 nn.Linear 로 폴백하고 peft 는 아예 안 써서 여기까지
+    무사히 온다. 하지만 사용자가 실제로 QLoRA 학습을 시작하면 첫 줄에서
+    ImportError 로 죽는다 — PASS 는 거짓 안심이다.
+    """
+    result = judge_result(_fallback_raw(env))
+
+    assert result["verdict"] == "WARN"
+    assert "qlora_stack_not_installed" in result["reasons"]
+
+
+def test_installed_qlora_stack_stays_pass() -> None:
+    env = {"bitsandbytes_installed": True, "peft_installed": True}
+
+    assert judge_result(_fallback_raw(env))["verdict"] == "PASS"
+
+
+@pytest.mark.parametrize("env", [{}, {"bitsandbytes_installed": None, "peft_installed": None}])
+def test_unknown_install_state_does_not_warn(env: dict) -> None:
+    """`None`(못 읽음)을 "설치 안 됨"으로 단정하지 않는다 — 멀쩡한 환경에 경고를 만들지 않는다."""
+    result = judge_result(_fallback_raw(env))
+
+    assert result["verdict"] == "PASS"
+    assert "qlora_stack_not_installed" not in result["reasons"]
+
+
+def test_real_failure_still_wins_over_the_warn() -> None:
+    """FAIL 이 있으면 그쪽이 이긴다 — 미설치 경고가 실패를 가리지 않는다."""
+    raw = _fallback_raw({"bitsandbytes_installed": False})
+    raw["device"] = "cpu"
+
+    assert judge_result(raw)["verdict"] == "FAIL"

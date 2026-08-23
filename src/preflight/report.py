@@ -31,6 +31,20 @@ _REASON_MESSAGES: dict[str, str] = {
 # 이 reason은 verdict(FAIL/WARN)와 무관한 정보성 표시라 문제 카운트에서 제외한다.
 _INFO_ONLY_REASONS = {"quant_fallback"}
 
+#: QLoRA 학습에 필요한데 없는 라이브러리 → 화면 문구. 라이브러리마다 한 줄씩
+#: 나간다 — 원인도 결과도 다르기 때문이다(4bit 불가 vs LoRA 불가). 뭉치면
+#: 그 차이가 사라지고, 우리 리포트의 항목별 한 줄 형식과도 어긋난다(#117).
+_MISSING_STACK_MESSAGES: dict[str, tuple[str, str]] = {
+    "bitsandbytes_installed": (
+        "4bit 사용 불가",
+        "bitsandbytes가 없어 QLoRA(4bit)로 학습할 수 없습니다",
+    ),
+    "peft_installed": (
+        "LoRA 사용 불가",
+        "peft가 없어 LoRA 어댑터를 붙일 수 없습니다",
+    ),
+}
+
 # status="error"이면서 error_log의 마지막 줄이 이 이름의 예외면 "원인 미상" 대신
 # 그 메시지를 표제로 쓴다(_known_error_headline 참고, #83). canary/model.py가
 # 원인을 확정할 수 있는 config 조회 실패에만 ModelConfigError를 쓴다(#62) — 여기서는
@@ -312,6 +326,38 @@ def _vram_line(result: dict) -> _Line:
     return _Line("✔", "green", f"VRAM 실측    {detail}")
 
 
+def _missing_stack_lines(result: dict) -> list[_Line]:
+    """QLoRA 학습에 필요한데 설치되지 않은 라이브러리마다 한 줄 (#117).
+
+    **`env`를 직접 본다.** `cause`는 대표 원인 하나뿐이라 둘이 동시에 없는
+    경우를 표현할 수 없다 — `_quant_lines`가 리스트를 돌려주는 것과 같은 이유다.
+
+    **`False`일 때만 말한다.** `None`은 `find_spec` 자체가 실패해 "모른다"는
+    뜻이므로 아무 줄도 내지 않는다 — 멀쩡한 환경에 없는 문제를 만들지 않는다.
+
+    **기본 체크에서만 부른다**(`_build_lines`) — 설치 여부는 모델과 무관한 환경
+    사실이고, `--model` 모드는 결과가 2개라 양쪽에서 그리면 중복된다.
+
+    문구가 **"우리 진단이 폴백했다"가 아니라 "당신 학습이 죽는다"** 를 말한다.
+    폴백 줄(`_quant_fallback_line`)은 도구 사정을 알리는 정보성 표시고, 이쪽은
+    사용자에게 실제로 무슨 일이 생기는지를 알린다.
+    """
+    env = result.get("env") or {}
+    lines = []
+    for field, (title, detail) in _MISSING_STACK_MESSAGES.items():
+        if env.get(field) is False:
+            lines.append(
+                _Line(
+                    "⚠",
+                    "yellow",
+                    f"{title}    {detail}",
+                    detail="이 상태로 QLoRA 학습을 시작하면 ImportError로 즉시 종료됩니다.",
+                    is_problem=True,
+                )
+            )
+    return lines
+
+
 def _memory_headroom_line(result: dict) -> _Line | None:
     """judge.py의 "memory_delta_high"(가용 VRAM 90% 이상 소모) WARN을 화면에 반영한다.
 
@@ -462,6 +508,11 @@ def _build_lines(result: dict) -> list[_Line]:
         if result.get("cpu_multiplier") is not None:
             lines.append(_timing_line(result))
         lines.extend(_quant_lines(result))
+        # **기본 체크에만 그린다.** 설치 여부는 모델과 무관한 환경 사실이라
+        # 두 결과의 env가 항상 같다 — `--model` 모드는 결과가 2개(기본+모델)라
+        # 분기 밖에서 그리면 똑같은 줄이 두 번 찍히고 문제 수까지 부풀려진다(#117).
+        # 기본 체크는 모델 체크가 생략되는 경우에도 항상 화면에 남는다.
+        lines.extend(_missing_stack_lines(result))
 
     headroom_line = _memory_headroom_line(result)
     if headroom_line is not None:

@@ -245,6 +245,16 @@ _FIX_MAP: dict[str, tuple[str, list[str] | None]] = {
         "CPU 대비 연산 속도 2배 미만 (원인 특정 어려운 회색지대 — 성능 저하 가능성 안내)",
         None,
     ),
+    # 실제 문구와 args는 suggest_fix()가 env를 보고 동적으로 만든다 — 없는 것만
+    # 모아 pip 한 줄로 조립한다. 여기 값은 env를 못 읽었을 때의 폴백이다.
+    #
+    # 조합마다 cause를 만들지 않는 이유: 라이브러리가 하나 늘 때마다 조합이
+    # 배로 늘어난다. cause는 하나로 두고 명령만 조립한다(torch_not_installed가
+    # 드라이버를 보고 휠 태그를 고르는 것과 같은 기계다, #82·ADR-0007).
+    "qlora_stack_not_installed": (
+        "QLoRA 학습에 필요한 라이브러리가 설치되어 있지 않습니다",
+        None,
+    ),
     # 실제 문구는 suggest_fix()가 env.model_max_position과 seq_len으로 숫자를 채워
     # 만든다 — 여기 값은 그 둘을 못 읽었을 때의 폴백이다.
     #
@@ -323,6 +333,10 @@ def suggest_fix(check_result: dict) -> dict | None:
         env = check_result.get("env") or {}
         tag = _torch_cuda_tag_for_env(env)
         args = _torch_cuda_reinstall_args(tag)
+    if cause == "qlora_stack_not_installed":
+        assembled = _qlora_stack_fix(check_result.get("env") or {})
+        if assembled is not None:
+            message, args = assembled
     if cause == "seq_len_exceeds_model_max":
         env = check_result.get("env") or {}
         note = _seq_len_note(check_result.get("seq_len"), env.get("model_max_position"))
@@ -338,6 +352,37 @@ def suggest_fix(check_result: dict) -> dict | None:
         "fix_command": fix_command,
         "fix_argv": fix_argv,
     }
+
+
+#: `env` 필드 → 설치할 pip 패키지 지정자.
+#: bitsandbytes는 버전 하한이 있다 — 구버전이면 transformers가 그대로 거절한다
+#: ("requires bitsandbytes: pip install -U bitsandbytes>=0.46.1", 실측).
+_QLORA_STACK_PACKAGES = {
+    "bitsandbytes_installed": "bitsandbytes>=0.46.1",
+    "peft_installed": "peft",
+}
+
+
+def _qlora_stack_fix(env: dict) -> tuple[str, list[str]] | None:
+    """없는 라이브러리만 모아 **하나의** pip 명령으로 조립한다 (#117).
+
+    둘 다 없을 때 명령을 나누면, 사용자가 하나 고치고 다시 돌렸다가 또 다른 게
+    없다는 말을 듣는다. `--yes`도 한 번에 끝나야 한다.
+
+    `False`(설치 안 됨 확정)인 것만 담는다 — `None`은 "못 읽었다"이므로 명령에
+    넣지 않는다. 하나도 확정되지 않았으면 None을 돌려주고 호출 측이 `_FIX_MAP`의
+    기본 문구를 쓰게 한다.
+    """
+    missing = [pkg for field, pkg in _QLORA_STACK_PACKAGES.items() if env.get(field) is False]
+    if not missing:
+        return None
+
+    names = ", ".join(pkg.split(">=")[0] for pkg in missing)
+    message = (
+        f"{names}가 없어 QLoRA 학습을 시작할 수 없습니다"
+        " — 이 상태로 시작하면 ImportError로 즉시 종료됩니다"
+    )
+    return message, ["-m", "pip", "install", "-U", *missing]
 
 
 def _seq_len_note(seq_len, max_position) -> str | None:
