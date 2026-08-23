@@ -69,8 +69,14 @@ def _progress(message: str) -> None:
     기본 체크는 첫 줄까지 10초 안팎, `--yes`는 pip 재설치+canary 재실행으로 1분
     넘게 아무 출력이 없어 멈춘 것처럼 보인다. stdout은 `--json` 계약(cli.md)상
     결과만 담아야 하므로 stderr를 쓴다.
+
+    직후 `flush()`가 필요하다 — 안 하면 뒤이어 돌 몇 초~몇십 초짜리 canary/pip
+    실행 동안 이 줄이 파이프 버퍼에 잠겨 있다가 나중에야 나온다. 화면에 먼저
+    보여주는 것이 이 기능의 목적이라 지연되면 의미가 없다(리다이렉트되면
+    표준 스트림이 줄 단위 대신 블록 단위로 버퍼링되는 게 원인).
     """
     print(message, file=sys.stderr)
+    sys.stderr.flush()
 
 
 def get_exit_code(verdict: str) -> int:
