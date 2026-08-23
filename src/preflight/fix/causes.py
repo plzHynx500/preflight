@@ -31,11 +31,17 @@ def classify_cause(check_result: dict) -> str:
 
     # 2. FAIL - import_crash
     if status == "import_crash" or "status_import_crash" in reasons:
+        env = check_result.get("env") or {}
+
+        missing = _classify_missing_library(env)
+        if missing:
+            return missing
+
         if _BNB_IMPORT_SIGNATURE in error_log.lower():
             return "bnb_not_compiled_with_cuda"
-        # CUDA 런타임·드라이버 계열(c10_cuda.dll, libcudart 등)도 여기로 떨어진다.
-        # 전용 원인을 새로 만드는 건 #44에서 다룬다 — 지금은 "틀린 명령을 실행하지
-        # 않는 것"이 목적이라 fix_command가 없는 일반 원인으로 두는 편이 안전하다.
+        # 라이브러리는 설치돼 있는데 로드가 깨진 경우다 — CUDA 런타임·드라이버 계열
+        # (c10_cuda.dll, libcudart 등)이 여기로 떨어진다. 어느 import에서 죽었는지는
+        # 아직 모르므로(#93의 후속안 A) fix_command가 없는 일반 원인으로 둔다.
         return "import_crash_general"
 
     # 3. FAIL - oom
@@ -51,6 +57,12 @@ def classify_cause(check_result: dict) -> str:
 
     # 5. status == "error"
     if status == "error":
+        # 모델 체크가 쓰는 transformers는 `_import_canary_stack()`이 아니라 `_run()`
+        # 안에서 import된다 — 없으면 `import_crash`가 아니라 여기로 떨어진다(실측).
+        # 설치 여부는 같은 방식으로 판정한다.
+        missing = _classify_missing_library(check_result.get("env") or {})
+        if missing:
+            return missing
         return "unknown_error"
 
     # 6. WARN 항목
@@ -60,6 +72,35 @@ def classify_cause(check_result: dict) -> str:
         return "cpu_multiplier_low"
 
     return "unknown"
+
+
+def _classify_missing_library(env: dict) -> str | None:
+    """설치되지 않은 라이브러리가 있으면 그 원인 코드, 아니면 None.
+
+    로그 문자열보다 **설치 여부를 먼저** 본다. `env.*_installed`는 자식이
+    `find_spec`으로 읽은 환경 사실이라(#44) 문구가 바뀌어도 흔들리지 않고,
+    트레이스백이 아예 없는 경우(네이티브 즉사)에도 유효하다.
+
+    **`False`일 때만 단정한다** — `None`은 "설치 안 됨"이 아니라 "못 읽었다"이므로
+    호출 측의 기존 분류로 흘려보낸다("모르는 것"과 "아닌 것"을 섞지 않는다).
+
+    `status`가 `import_crash`인 경우와 `error`인 경우 모두에서 쓴다. torch는
+    `_import_canary_stack()`에서, transformers는 `_run()` 안에서 import되므로
+    **없을 때 떨어지는 status가 서로 다르다** — 판정은 같아야 한다.
+
+    bitsandbytes는 여기서 다루지 않는다. 없어도 `_try_import_bitsandbytes()`가
+    삼키고 `nn.Linear`로 폴백하므로 실패 경로로 오지 않는다 — 그 사실은 화면의
+    폴백 안내에서 `env.bitsandbytes_installed`로 알린다(#60).
+    """
+    if env.get("torch_installed") is False:
+        # GPU가 실제로 보일 때만 CUDA 빌드 설치를 권한다 — GPU가 없는 기계(AMD 등)에서
+        # 2GB가 넘는 CUDA 휠을 받아봐야 아무것도 달라지지 않는다.
+        # `torch_cpu_only_build` / `..._no_gpu`와 같은 갈림이다(#55).
+        gpu_seen = env.get("gpu_free_mb") is not None
+        return "torch_not_installed" if gpu_seen else "torch_not_installed_no_gpu"
+    if env.get("transformers_installed") is False:
+        return "transformers_not_installed"
+    return None
 
 
 def _classify_cpu_fallback(env: dict) -> str:

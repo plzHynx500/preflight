@@ -145,6 +145,40 @@ def test_render_report_quant_fallback_is_informational_not_failure(capsys) -> No
     assert "⚠" not in out
 
 
+def test_render_report_quant_fallback_says_missing_when_known_missing(capsys) -> None:
+    """bitsandbytes가 **설치조차 안 된 것이 확실**하면 그렇게 말한다 (#60, #44).
+
+    기본 문구는 "미설치 또는 구버전"으로 뭉뚱그리는데, `env.bitsandbytes_installed`가
+    False면 둘 중 어느 쪽인지 확정할 수 있다.
+    """
+    raw = {
+        **_OK_RAW,
+        "device": "cuda",
+        "quant_backend": "nn-linear-fallback",
+        "env": {"bitsandbytes_installed": False},
+    }
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "설치되어 있지 않아" in out
+    assert "미설치 또는 구버전" not in out
+
+
+def test_render_report_quant_fallback_keeps_vague_message_when_unknown(capsys) -> None:
+    """`None`(못 읽음)이면 단정하지 않고 기존 뭉뚱그린 문구를 쓴다 (#44)."""
+    raw = {
+        **_OK_RAW,
+        "device": "cuda",
+        "quant_backend": "nn-linear-fallback",
+        "env": {"bitsandbytes_installed": None},
+    }
+
+    render_report([judge_result(raw)])
+
+    assert "미설치 또는 구버전" in capsys.readouterr().out
+
+
 def test_render_report_quant_fallback_message_does_not_assume_old_version(capsys) -> None:
     """bitsandbytes 미설치 환경도 있는데 "구버전"이라고 단정하지 않는다(#60)."""
     raw = {**_OK_RAW, "device": "cuda", "quant_backend": "nn-linear-fallback"}

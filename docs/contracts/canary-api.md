@@ -54,6 +54,9 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
     "bnb_compiled_with_cuda": True,     # 빌드 속성이 아니다 — 아래 경고 참고
     "bnb_cpu_4bit_supported": True,     # 4bit을 실제로 시도한 경우에만. 아니면 None
     "cuda_visible_devices": None,       # os.environ["CUDA_VISIBLE_DEVICES"] 원문. 없으면 None
+    "torch_installed": True,            # find_spec 기반 — import 전에도 채워진다
+    "transformers_installed": True,
+    "bitsandbytes_installed": False,    # False면 "설치 안 됨" 확정. None은 "못 읽음"
 }
 ```
 
@@ -67,7 +70,13 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 
 > `cuda_visible_devices`만 예외다 — `os.environ.get()`은 import가 아니므로 실패할 수 없고, import 성패와 무관하게 항상 값(또는 `None`)이 채워진다. 그래도 자식이 채우는 이유는 그 값을 봐야 할 순간이 정확히 "자식이 본 CUDA 장치 가시성"이라서다(ADR-0008).
 
-항목은 **독립적으로 실패**할 수 있고, 실패한 항목만 `None`이 된다. `status == "import_crash"`여서 아무 속성도 못 읽은 경우에도 **키는 유지한 채 값만 전부 `None`인 dict**가 온다 — 소비자가 키 존재 여부까지 따로 방어하지 않게 하기 위함이다. 이때 속성을 다시 읽으려 시도하지는 않는다(방금 실패한 import를 반복할 뿐이다).
+항목은 **독립적으로 실패**할 수 있고, 실패한 항목만 `None`이 된다. 키는 **어느 경우에도 유지된다** — 소비자가 키 존재 여부까지 따로 방어하지 않게 하기 위함이다.
+
+**`*_installed`는 나머지와 채워지는 시점이 다르다.** `importlib.util.find_spec`은 모듈을 **찾기만 하고 실행하지 않으므로**, import를 시도하기 **전에** 그리고 import가 죽는 환경에서도 안전하게 읽을 수 있다(#44, #92). 그래서 `status == "import_crash"`인 결과에도 이 값들은 채워져 있다 — 자식이 죽기 전에 이미 담아 보냈기 때문이다.
+
+반면 `torch_version`·`torch_cuda_version`·`bnb_*`는 **import에 성공해야 읽히는 값**이라, import가 깨진 경우 전부 `None`이다. **이때 속성을 다시 읽으려 시도하지는 않는다**(방금 실패한 import를 반복할 뿐이다) — `find_spec`은 그 "다시 읽기"에 해당하지 않는다.
+
+> **`*_installed`의 `False`와 `None`을 섞지 말 것.** `False`는 "설치 안 됨"이 **확정**된 것이고, `None`은 `find_spec` 자체가 실패해 **"모른다"** 는 뜻이다. 원인 분류는 `False`일 때만 단정한다.
 
 `env` 자체를 못 받는 경우(구버전 canary 등)는 `None`이므로, 소비자는 `(raw.get("env") or {}).get(...)` 형태로 읽어야 한다.
 

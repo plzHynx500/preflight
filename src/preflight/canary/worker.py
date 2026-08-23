@@ -21,6 +21,7 @@ engine.run_canary_check()이 `python -m preflight.canary.worker <spec> <result>`
 from __future__ import annotations
 
 import ctypes
+import importlib.util
 import json
 import os
 import sys
@@ -57,31 +58,34 @@ _PREWRITE_RUN_NOTE = (
 def main() -> None:
     spec_path, result_path = sys.argv[1], sys.argv[2]
 
+    # import를 시도하기 전에 채울 수 있는 것부터 채운다. `find_spec`은 모듈을 찾기만
+    # 하고 실행하지 않으므로 여기서 불러도 안전하고, **어느 경로로 죽든 이 값은
+    # 살아남는다** — 아래 세 곳의 실패 기록이 모두 이 `env`를 그대로 넘긴다(#44).
+    env = _installed_env()
+
     # 죽기 전에 미리 기록한다. 지금부터 import를 통과하기 전까지 프로세스가 즉사하면
-    # 이 결과가 그대로 부모에게 읽힌다. 아직 아무것도 못 읽었지만 `env`는 골격을
-    # 넘긴다 — 계약이 "어느 경우에도 키는 있다"고 약속하기 때문이다(canary-api.md).
-    _write_result(
-        result_path, _blank_result(STATUS_IMPORT_CRASH, _PREWRITE_IMPORT_NOTE, _empty_env())
-    )
+    # 이 결과가 그대로 부모에게 읽힌다. import로만 읽히는 속성은 아직 전부 None이지만
+    # 설치 여부는 이미 담겨 있다 — 계약이 "어느 경우에도 키는 있다"고 약속한다
+    # (canary-api.md).
+    _write_result(result_path, _blank_result(STATUS_IMPORT_CRASH, _PREWRITE_IMPORT_NOTE, env))
 
     try:
         with open(spec_path, encoding="utf-8") as spec_file:
             spec = json.load(spec_file)
     except Exception:  # noqa: BLE001 - spec을 못 읽는 것도 진단 결과로 포장한다
-        _write_result(
-            result_path, _blank_result(STATUS_ERROR, traceback.format_exc(), _empty_env())
-        )
+        _write_result(result_path, _blank_result(STATUS_ERROR, traceback.format_exc(), env))
         return
 
     try:
         torch = _import_canary_stack()
     except BaseException:  # noqa: BLE001 - SystemExit까지 포함해 import 실패로 본다
         # 여기서 _collect_env()를 부르지 않는다 — 방금 실패한 import를 그대로 다시
-        # 시도하는 꼴이라 결과는 어차피 전부 None이고 위험만 반복된다. 형태만 맞춘
-        # 골격을 넘겨 소비자가 `env`의 유무를 따로 방어하지 않게 한다.
+        # 시도하는 꼴이라 위험만 반복된다. 대신 **이미 읽어둔 `env`를 그대로 넘긴다**
+        # (#44) — `find_spec`은 import가 아니라 다시 읽는 것이 아니고, 이 값이 있어야
+        # 부모가 "torch가 아예 없다"와 "있는데 로드가 깨졌다"를 가를 수 있다.
         _write_result(
             result_path,
-            _blank_result(STATUS_IMPORT_CRASH, traceback.format_exc(), _empty_env()),
+            _blank_result(STATUS_IMPORT_CRASH, traceback.format_exc(), env),
         )
         return
 
@@ -168,7 +172,46 @@ ENV_FIELDS = (
     # 현재 값을 화면에 보여준다. import 없이 읽는 값이라 import 실패와 무관하게
     # 항상 채워진다(설정 안 됐으면 None).
     "cuda_visible_devices",
+    # canary가 실제로 import하는 세 라이브러리의 **설치 여부**. `find_spec`으로 읽으므로
+    # import를 시도하기 전에, import가 죽는 환경에서도 안전하게 채울 수 있다(#44, #92).
+    #
+    # 아래 `torch_version` 류와 뜻이 다르다 — 그쪽은 "import에 성공해서 읽은 값"이라
+    # import 전에는 알 수 없다. 반면 이 값들은 **canary를 돌리지 않고도 참인 환경 사실**
+    # 이라 `env` 기준에 정확히 들어맞는다(canary-api.md의 `env` 절).
+    #
+    # 읽지 못한 경우(손상된 메타데이터 등)는 None으로 남는다 — "설치 안 됨(False)"과
+    # "모름(None)"을 섞지 않는다.
+    "torch_installed",
+    "transformers_installed",
+    "bitsandbytes_installed",
 )
+
+#: `find_spec`으로 설치 여부를 확인할 라이브러리. canary가 실제로 import하는 것만 넣는다
+#: — 쓰지도 않는 라이브러리의 설치 여부를 보고하면 진단이 아니라 잡음이다.
+#: (`peft`는 쓰지 않는다 — LoRA 어댑터를 직접 만든다, model.py `_attach_manual_lora`.)
+CHECKED_LIBRARIES = ("torch", "transformers", "bitsandbytes")
+
+
+def _installed_env() -> dict:
+    """import를 시도하기 **전에** 채울 수 있는 환경 사실 — 각 라이브러리의 설치 여부.
+
+    `importlib.util.find_spec`은 모듈을 **찾기만 하고 실행하지 않는다.** 진단 대상이
+    바로 "그 import가 죽는 환경"이므로(ADR-0002) 이 성질이 중요하다 — import를
+    시도하기 전에, 그리고 죽지 않고 확인할 수 있다.
+
+    그래서 이 값들은 `torch_version` 같은 "import에 성공해야 읽히는 값"과 뜻이 다르다.
+    후자가 `None`인 것은 "여기까지 못 갔다"일 수도 있지만, 이쪽은 **어느 경로에서든
+    같은 답**이라 진행도 신호와 섞이지 않는다.
+
+    `find_spec` 자체가 실패할 수도 있다(손상된 메타데이터, 이상한 finder 등). 그때는
+    `None`으로 남긴다 — **"설치 안 됨(False)"과 "모름(None)"을 섞지 않는다.**
+    """
+    env = _empty_env()
+    for module_name in CHECKED_LIBRARIES:
+        env[f"{module_name}_installed"] = _safe_read(
+            lambda name=module_name: importlib.util.find_spec(name) is not None
+        )
+    return env
 
 
 def _empty_env() -> dict:
@@ -190,7 +233,7 @@ def _collect_env() -> dict:
 
     항목별로 독립적으로 실패할 수 있고, 실패한 항목만 None이 된다.
     """
-    env = _empty_env()
+    env = _installed_env()
     env["torch_version"] = _safe_read(_read_torch_version)
     env["torch_cuda_version"] = _safe_read(_read_torch_cuda_version)
     env["bnb_compiled_with_cuda"] = _safe_read(_read_bnb_compiled_with_cuda)

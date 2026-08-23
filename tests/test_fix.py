@@ -183,6 +183,110 @@ def test_classify_real_bitsandbytes_import_crash_still_matches() -> None:
         assert classify_cause(res) == "bnb_not_compiled_with_cuda", log
 
 
+# ── 라이브러리 미설치는 설치 여부(find_spec)로 가른다 (#44, #92) ──────────────
+
+
+def _import_crash(env: dict, error_log: str = "ModuleNotFoundError: No module named 'x'") -> dict:
+    """import_crash 판정 결과에 주어진 env를 얹는다."""
+    return {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["status_import_crash"],
+        "error_log": error_log,
+        "env": env,
+    }
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"torch_installed": False}, "torch_not_installed_no_gpu"),
+        (
+            {"torch_installed": False, "gpu_free_mb": 9000.0},
+            "torch_not_installed",
+        ),
+        ({"torch_installed": True, "transformers_installed": False}, "transformers_not_installed"),
+    ],
+)
+def test_missing_library_is_classified_from_installed_flag(env: dict, expected: str) -> None:
+    """설치 여부는 로그 문자열이 아니라 `env.*_installed`로 판별한다 (#44, #92).
+
+    트레이스백 문자열을 뒤지면 문구가 바뀔 때마다 흔들리고, 네이티브 즉사처럼
+    트레이스백이 아예 없는 경우엔 쓸 수도 없다.
+    """
+    assert classify_cause(_import_crash(env)) == expected
+
+
+@pytest.mark.parametrize(
+    ("driver", "expected_tag"),
+    [("610.62", "cu130"), ("560.76", "cu126"), (None, "cu124")],
+)
+def test_torch_not_installed_gets_driver_matched_wheel(driver, expected_tag: str) -> None:
+    """torch가 아예 없어도 드라이버에 맞는 CUDA 휠을 제안한다 (#44).
+
+    `torch_cpu_only_build`와 같은 기계를 쓴다(#82, ADR-0007) — 맨몸
+    `pip install torch`는 CPU 전용 빌드를 깔아 "고쳤는데 여전히 CPU"가 되므로,
+    `--index-url`로 휠을 지정해야 한다.
+    """
+    result = _import_crash(
+        {"torch_installed": False, "gpu_free_mb": 9000.0, "gpu_driver_version": driver}
+    )
+
+    fix = suggest_fix(result)
+    assert fix is not None
+    assert f"/whl/{expected_tag}" in fix["fix_command"]
+    assert fix["fix_argv"][0] == sys.executable
+
+
+@pytest.mark.parametrize(
+    "cause_env",
+    [
+        {"torch_installed": False},  # GPU가 안 보임 -> torch_not_installed_no_gpu
+        {"torch_installed": True, "transformers_installed": False},
+    ],
+)
+def test_no_auto_fix_when_command_cannot_be_decided(cause_env: dict) -> None:
+    """어떤 휠을 깔지 단정할 수 없으면 명령을 주지 않는다.
+
+    GPU가 안 보이는 기계에 2GB CUDA 휠을 받게 하거나, torch 버전과 호환이 얽힌
+    transformers를 자동 설치하면 기존 환경을 흔든다 (ADR-0008).
+    """
+    fix = suggest_fix(_import_crash(cause_env))
+
+    assert fix is not None
+    assert fix["fix_command"] is None
+    assert fix["fix_argv"] is None
+
+
+def test_torch_is_checked_before_transformers() -> None:
+    """둘 다 없으면 torch를 먼저 짚는다 — 없으면 모델 체크까지 갈 일이 없다."""
+    result = _import_crash(
+        {"torch_installed": False, "transformers_installed": False, "gpu_free_mb": 9000.0}
+    )
+
+    assert classify_cause(result) == "torch_not_installed"
+
+
+@pytest.mark.parametrize("env", [{}, {"torch_installed": None}])
+def test_unknown_installed_flag_does_not_claim_missing(env: dict) -> None:
+    """`None`(못 읽음)을 "설치 안 됨"으로 단정하지 않는다 (#44).
+
+    `find_spec` 자체가 실패할 수 있다. 그때는 기존 분류로 흘려보낸다 — "모르는 것"과
+    "아닌 것"을 섞으면 멀쩡한 환경에 엉뚱한 안내가 나간다.
+    """
+    assert classify_cause(_import_crash(env)) == "import_crash_general"
+
+
+def test_installed_flag_does_not_shadow_real_bitsandbytes_crash() -> None:
+    """설치는 돼 있는데 로드가 깨진 경우는 기존 분류가 그대로 살아 있다."""
+    result = _import_crash(
+        {"torch_installed": True, "transformers_installed": True, "bitsandbytes_installed": True},
+        error_log="libbitsandbytes_cpu.so: undefined symbol",
+    )
+
+    assert classify_cause(result) == "bnb_not_compiled_with_cuda"
+
+
 # ── cpu 폴백 분류: env의 환경 사실을 읽는다 (#55, #72) ─────────────────────────
 
 
