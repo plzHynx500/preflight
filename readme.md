@@ -69,9 +69,9 @@ python -m preflight check
 ```
 $ preflight check
 
-✔ GPU/드라이버/CUDA 체인        정상 인식 (torch.cuda.is_available()=True)
+✔ Canary 연산 실행              device=cuda · 메모리 이동 확인됨
 ✖ bitsandbytes 4bit 레이어      device=cpu 감지 → 조용한 CPU 폴백
-✖ 실행 시간 1.1배                CPU 대비 유의미한 가속 없음 (2배 미만)
+⚠ 실행 시간 1.1배                CPU 대비 유의미한 가속 없음 (2배 미만)
 
 FIX(제안): /home/user/venv/bin/python -m pip install bitsandbytes --upgrade --force-reinstall
 ```

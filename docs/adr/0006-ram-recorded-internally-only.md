@@ -1,7 +1,7 @@
 # ADR-0006: 호스트 RAM은 내부 근거로만 기록하고 진단 항목으로 노출하지 않는다
 
 **상태**: Accepted (2026-08-07)
-**관련 Issue**: #27 (기록 도입) · #19 (같은 PR) · [ADR-0005](0005-pre-written-result-over-exit-code.md)(사전 기록 구조)
+**관련 Issue**: #27 (기록 도입) · #19 (같은 PR) · [ADR-0010](0010-pre-written-result-over-exit-code.md)(사전 기록 구조)
 
 ## 맥락
 
@@ -23,7 +23,7 @@ RAM  = f(로딩 방식, 데이터셋, DataLoader, offload)  ← 전부 사용자
 
 **canary가 잰 RAM은 실제 학습의 RAM을 대표하지 못한다.** 사용자 스크립트를 읽지 않기 때문이고, 읽는 것은 FR-14(향후) 범위다.
 
-**② 우리가 원인을 좁히는 쪽** — [ADR-0005](0005-pre-written-result-over-exit-code.md)에 이런 한계가 있다.
+**② 우리가 원인을 좁히는 쪽** — [ADR-0010](0010-pre-written-result-over-exit-code.md)에 이런 한계가 있다.
 
 > OOM이 프로세스 강제 종료로 나타나는 경우는 `oom`으로 확정할 수 없어 `error`가 된다
 
@@ -38,7 +38,7 @@ RAM  = f(로딩 방식, 데이터셋, DataLoader, offload)  ← 전부 사용자
 
 ## 결정
 
-**RSS 최고점을 재되, [사전 기록](0005-pre-written-result-over-exit-code.md)에만 남기고 사용자에게 보이는 곳에는 쓰지 않는다.**
+**RSS 최고점을 재되, [사전 기록](0010-pre-written-result-over-exit-code.md)에만 남기고 사용자에게 보이는 곳에는 쓰지 않는다.**
 
 - 자식은 사전 기록을 남길 때마다 **그 시점까지의 최고점을 다시 잰다**(`rss_peak_mb`). 최종 결과에만 넣으면 정작 즉사했을 때 아무것도 안 남는다
 - **현재값이 아니라 최고점**이다. 읽는 시점이 언제나 사후라 *"지금 얼마나 쓰나"* 는 의미가 없고, 커널이 최고점을 기록해주므로 주기적 샘플링 없이도 잠깐 치솟았다 내려간 구간이 남는다

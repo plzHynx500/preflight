@@ -85,7 +85,7 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 
 `status == "error"`의 원인 후보를 좁히기 위한 **내부 근거**다. `verdict`에 영향을 주지 않고 화면에도 찍지 않는다 — 다만 **원인 분류(`suggest_fix`)에는 쓸 수 있다.** 이유는 [ADR-0006](../adr/0006-ram-recorded-internally-only.md) 참고.
 
-자식은 [사전 기록](../adr/0005-pre-written-result-over-exit-code.md)을 남길 때마다 이 값을 다시 잰다. 최종 결과에만 넣으면 정작 예외 없이 즉사했을 때 아무것도 남지 않는다.
+자식은 [사전 기록](../adr/0010-pre-written-result-over-exit-code.md)을 남길 때마다 이 값을 다시 잰다. 최종 결과에만 넣으면 정작 예외 없이 즉사했을 때 아무것도 남지 않는다.
 
 **현재값이 아니라 최고점**(Windows `PeakWorkingSetSize` · Linux `VmHWM`)이다. 이 값을 읽는 시점은 언제나 사후라 *"지금 얼마나 쓰고 있나"* 는 의미가 없고, 커널이 최고점을 대신 기록해주므로 우리가 주기적으로 샘플링하지 않아도 torch import처럼 잠깐 치솟았다 내려가는 구간이 그대로 남는다.
 
@@ -110,8 +110,11 @@ def build_dummy_model(model_name: str, device: str = "cuda"):
     # quant_backend: "bnb-4bit" | "nn-linear-fallback" (run_canary_check 반환
     # 스키마의 quant_backend와 동일한 값 — W9에서 그대로 채워 넣으면 된다)
 
-def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int):
-    """토큰 ID(정수) 텐서. vocab_size가 있어야 유효한 범위의 ID를 만들 수 있다."""
+def build_dummy_input(batch_size: int, seq_len: int, vocab_size: int, device: str):
+    """토큰 ID(정수) 텐서. vocab_size가 있어야 유효한 범위의 ID를 만들 수 있다.
+    device는 build_dummy_model에 넘긴 것과 같은 값을 그대로 준다 — 다르면
+    모델과 입력이 다른 디바이스에 있게 되어 실행 단계에서 즉시 죽는다.
+    """
     ...
 ```
 

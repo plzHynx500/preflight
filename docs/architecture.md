@@ -35,7 +35,7 @@ Preflight는 환경 설치 단계와 학습 실행 단계 사이에 놓이는 �
 | CLI 프레임워크 | Typer | 타입 힌트 기반으로 명령어를 간결하게 정의, `--help` 자동 생성 |
 | 출력 포맷팅 | rich | 터미널에 색상·기호(✔/⚠/✖)를 안정적으로 렌더링 |
 | GPU 상태 조회 | nvidia-ml-py | nvidia-smi가 쓰는 NVML C 라이브러리의 Python 바인딩. 코드에서 쓰는 모듈 이름은 `pynvml` 그대로다 — 같은 이름의 `pynvml` 배포판은 이제 경고만 띄우는 리다이렉터라 쓰지 않는다 |
-| 학습 스택 연동 | 동일 인터프리터 내 import | 사용자 venv에 이미 설치된 torch/transformers/peft/bitsandbytes를 그대로 검증에 사용 |
+| 학습 스택 연동 | 동일 인터프리터 내 import | 사용자 venv에 이미 설치된 torch/transformers/bitsandbytes를 그대로 검증에 사용. `peft`는 하드 의존성으로 못 써 LoRA 어댑터는 `peft` 없이 직접 구현한다(`canary/model.py`의 `_attach_manual_lora`) |
 | 프로세스 격리 | subprocess / multiprocessing | canary의 import·OOM 크래시가 메인 CLI를 죽이지 않도록 격리 ([ADR-0002](adr/0002-subprocess-isolation-for-canary.md)) |
 | 정밀 타이밍 | torch.cuda.Event | wall-clock 대신 GPU 커널 실행 시간을 정확히 측정 |
 | 패키징·배포 | PyPI (pip install) | 사용자의 기존 Python 환경에 설치돼야 그 환경을 검사할 수 있음 |
@@ -230,7 +230,7 @@ canary 실행 중 프로세스가 죽을 수 있는 경로가 두 가지 있다.
 | 파이썬 예외로 잡히는 실패 | 자식이 **구간별 `try`** 로 잡는다. import 구간이면 `import_crash`, 실행 구간의 `torch.cuda.OutOfMemoryError`면 `oom`, 그 외는 `error`. 예외 **타입과 구간**으로 나누므로 에러 메시지 문자열을 뒤지지 않는다 |
 | 프로세스가 통째로 죽는 실패 | 자식이 **죽기 전에 미리 기록**한다 — 시작 직후 "여기서 죽으면 이게 정답"인 결과를 써두고, 단계를 통과할 때마다 덮어쓴다 |
 
-두 번째가 필요한 이유는 `.so` 로드 실패가 SIGSEGV로 즉사시켜 `except`도 `finally`도 돌지 않기 때문이다. "죽은 뒤 기록"이 불가능하므로 순서를 뒤집는다. 덤으로 **부모가 exit code를 해석할 필요가 없어진다** — 같은 크래시가 Linux에서는 `-11`(시그널), Windows에서는 `3221225477`(0xC0000005)로 나타나 OS별 분기가 필요한데, 마지막 기록만 읽으면 그 차이가 설계에서 사라진다(NFR-01). 채택 배경과 기각한 대안은 [ADR-0005](adr/0005-pre-written-result-over-exit-code.md) 참고.
+두 번째가 필요한 이유는 `.so` 로드 실패가 SIGSEGV로 즉사시켜 `except`도 `finally`도 돌지 않기 때문이다. "죽은 뒤 기록"이 불가능하므로 순서를 뒤집는다. 덤으로 **부모가 exit code를 해석할 필요가 없어진다** — 같은 크래시가 Linux에서는 `-11`(시그널), Windows에서는 `3221225477`(0xC0000005)로 나타나 OS별 분기가 필요한데, 마지막 기록만 읽으면 그 차이가 설계에서 사라진다(NFR-01). 채택 배경과 기각한 대안은 [ADR-0010](adr/0010-pre-written-result-over-exit-code.md) 참고.
 
 결과 파일은 **원자적으로 쓴다**(임시 파일에 쓴 뒤 rename). `open(path, "w")`는 여는 순간 기존 내용을 먼저 지우므로, 그 상태로 죽으면 미리 써둔 정보까지 함께 날아가기 때문이다.
 

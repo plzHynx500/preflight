@@ -241,7 +241,7 @@ AGENTS.md만으로는 부족하다. 긴 구현·디버깅이 이어지면 마무
 | `.agents/hooks.json` + `scripts/verify-before-pr.sh`(`.ps1`) | 포맷·린트·테스트·민감 파일 검사의 기계적 강제 | 있음 — 단 `.agents/hooks.json`은 Antigravity CLI 전용 형식이라 Claude Code에서는 아무 효과가 없다(Claude Code는 `.claude/settings.json`에 별도 hooks 스키마를 쓰며, 이 repo엔 아직 없다). Claude Code 세션에서는 `implement-issue` 스킬의 검증 단계나 `scripts/verify-before-pr.*`을 직접 호출하는 것으로 대체한다 |
 | `.github/workflows/ci.yml` + branch protection | 병합 전 최종 안전망 | CI 워크플로 있음. branch protection도 이미 켜져 있다 — main에 `verify (3.9)`/`verify (3.12)`가 required status check로 걸려 있다(아래 참고) |
 
-`verify-before-pr`는 포맷 검사 → 린트 → 테스트 → 민감 파일(`.env`, credentials, secret) 검사 순으로 실행한다. **현재는 pytest 단계만 예외적으로 비차단이다** — `tests/`에 구현 전 골격 스텁(`raise NotImplementedError`)이 남아 있어, 지금 무조건 차단으로 두면 문서만 고치는 PR까지 100% 막혀 검증 자체가 무력화되기 때문이다(포맷·린트·민감 파일 검사는 지금도 예외 없이 차단). `--strict-tests`(`-StrictTests`, 또는 `PREFLIGHT_STRICT_TESTS=1`)로 즉시 강제할 수 있고, 첫 구현 Issue가 머지되어 스텁이 사라지면 이 예외를 없애고 기본값을 strict로 되돌린다. `.github/workflows/ci.yml`의 Test 스텝도 같은 이유로 `continue-on-error: true`다 — 포맷·린트는 CI에서도 지금부터 실효 있는 차단 조건이다.
+`verify-before-pr`는 포맷 검사 → 린트 → 테스트 → 민감 파일(`.env`, credentials, secret) 검사 순으로 실행하며, 네 단계 모두 예외 없이 기본값으로 차단 조건이다. `tests/`에 있던 구현 전 골격 스텁(`raise NotImplementedError`)은 첫 구현 Issue가 머지되며 이미 전부 사라졌고, 그와 함께 pytest 단계도 strict(기본 차단)로 되돌렸다(`.github/workflows/ci.yml`의 Test 스텝도 같은 시점에 `continue-on-error: true`를 걷어냈다 — #42/PR #50). 급하게 우회해야 하면 `PREFLIGHT_STRICT_TESTS=0`으로 로컬 검증만 일시적으로 비차단 처리할 수 있으나, CI는 이 우회의 영향을 받지 않는다.
 
 Hook은 편의 장치이지 CI를 대체하는 최종 안전망이 아니며, 불안정하면 Hook을 끄고 스킬 + CI로 돌아간다.
 
