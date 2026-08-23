@@ -286,6 +286,35 @@ def _materialize_qlora(config, device, torch, AutoModelForCausalLM, replace_with
                     ),
                 )
 
+        # **버퍼도 같은 자리에서 실체화한다.** 파라미터만 채우면 `register_buffer`로
+        # 등록된 것들이 meta로 남아, forward에서 그걸 쓰는 순간
+        # `NotImplementedError: Cannot copy out of meta tensor`로 죽는다(#134).
+        #
+        # `with torch.device("meta")`는 그 블록 안에서 만들어지는 **모든** 텐서를
+        # meta로 보낸다 — 파라미터와 버퍼를 구분하지 않는다. 그래서 실체화하는 쪽도
+        # 둘 다 훑어야 한다.
+        #
+        # RoPE 계열(Llama·Mistral·Qwen·Gemma)이 위치 주파수를 `inv_freq` 버퍼로 갖고,
+        # 그게 정확히 이 구멍에 빠졌다. GPT-2 계열은 위치 정보가 `nn.Embedding`
+        # (=파라미터)이라 우연히 멀쩡했다.
+        #
+        # 값은 0이다. **VRAM은 값이 아니라 모양·자료형으로 정해지므로 측정에 영향이
+        # 없고**, 가중치도 이미 랜덤이라 이 canary가 정답을 계산하는 일은 애초에 없다.
+        # `inv_freq`가 0이면 회전이 없을 뿐 `cos`/`sin`은 정상이라 forward가 돈다.
+        #
+        # **미검토 사항(#134)**: 0이 수학적으로 특별한 값이라, 어떤 모델의 버퍼가
+        # 나눗셈 분모로 쓰이면 `inf`가 될 수 있다. 전수 확인은 하지 않았다 —
+        # `running_var`류는 `eps`가 막아주고 요즘 마스크는 함수로 계산되지만,
+        # 구체적 반례가 나오면 값 선택을 재검토한다. 그때 잡아줄 안전망은 값 자체가
+        # 아니라 **실체화 후 forward를 실제로 돌리는 테스트**다.
+        #
+        # `setattr`로 넣으면 `nn.Module.__setattr__`이 이미 버퍼인 이름을 `_buffers`에
+        # 다시 넣어줘서 `persistent` 여부가 유지된다(`inv_freq`는 persistent=False다).
+        for name, buf in list(module.named_buffers(recurse=False)):
+            if buf is None or buf.device.type != "meta":
+                continue
+            setattr(module, name, torch.zeros(buf.shape, dtype=buf.dtype, device=device))
+
     # 베이스는 얼린다 — LoRA 어댑터만 gradient·옵티마이저 상태를 갖는다.
     for param in model.parameters():
         param.requires_grad_(False)
