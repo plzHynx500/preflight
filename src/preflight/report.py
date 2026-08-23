@@ -71,6 +71,12 @@ _MODEL_MODE_QUANT_FALLBACK_MESSAGE = (
 _BNB_MISSING_QUANT_FALLBACK_MESSAGE = "nn.Linear로 대체 실행됨"
 
 _ERROR_LOG_MAX_CHARS = 200
+
+#: 폴백 사유(`quant_fallback_reason`)를 화면에 붙일 때의 상한 (#147, 상영님 리뷰).
+#: 사유 자체는 자르지 않는다 — `--json`에는 전문이 실려야 한다. 화면에서만 자른다.
+#: `error_log`와 같은 예산을 쓴다: 같은 `"<예외 종류>: <메시지>"` 형식이라
+#: (`_truncate_error_log` 참고) 한쪽만 상한이 없으면 어긋난다.
+_FALLBACK_REASON_MAX_CHARS = _ERROR_LOG_MAX_CHARS
 _TRUNCATION_NOTE = "(로그 일부만 표시 — 전문은 preflight check --json)"
 
 
@@ -438,7 +444,11 @@ def _quant_fallback_detail(result: dict, model_mode: bool) -> str | None:
         return None
     if not model_mode and (result.get("env") or {}).get("bitsandbytes_installed") is False:
         return None
-    return reason
+    # detail 줄은 `overflow="fold"`로 그려서(#56) 잘리지 않고 통째로 접힌다. HF Hub의
+    # 401 체인이나 bitsandbytes의 CUDA 진단 블록처럼 긴 예외가 그대로 오면 화면을
+    # 덮는다. `error_log`가 같은 형식인데 예산을 지키는 것과 어긋나서 여기서도 자른다
+    # (#147, 상영님 리뷰). 앞을 남기는 것은 예외 줄의 정보가 앞에 있기 때문이다(#71).
+    return _clip(reason, _FALLBACK_REASON_MAX_CHARS)
 
 
 def _quant_fallback_line(result: dict, model_mode: bool = False) -> _Line | None:

@@ -1520,3 +1520,27 @@ def test_render_report_fallback_without_reason_adds_no_line(capsys) -> None:
     assert "RuntimeError: boom" in with_reason
     # 사유 줄 하나만 늘어난다 — 다른 줄 구성은 건드리지 않는다.
     assert len(with_reason.splitlines()) == len(without.splitlines()) + 1
+
+
+def test_render_report_fallback_reason_is_capped(capsys) -> None:
+    """긴 폴백 사유는 화면에서 잘린다 (#147, 상영님 리뷰).
+
+    detail 줄은 `overflow="fold"`라 잘리지 않고 통째로 접힌다 — HF Hub의 401 체인이나
+    bitsandbytes의 CUDA 진단 블록이 그대로 오면 화면을 덮는다. `error_log`가 같은
+    `"<예외 종류>: <메시지>"` 형식인데 200자 예산을 지키는 것과 어긋났다.
+    `--json`의 원본은 그대로다 — 자르는 것은 화면뿐이다.
+    """
+    reason = "RuntimeError: " + "가" * 500
+    raw = {
+        **_OK_RAW,
+        "quant_backend": "nn-linear-fallback",
+        "quant_fallback_reason": reason,
+        "env": {"bitsandbytes_installed": True},
+    }
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "RuntimeError" in out
+    assert reason not in out
+    assert "…" in out
