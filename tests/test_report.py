@@ -148,11 +148,13 @@ def test_render_report_quant_fallback_is_informational_not_failure(capsys) -> No
     assert "⚠" not in out
 
 
-def test_render_report_quant_fallback_says_missing_when_known_missing(capsys) -> None:
-    """bitsandbytes가 **설치조차 안 된 것이 확실**하면 그렇게 말한다 (#60, #44).
+def test_render_report_quant_fallback_does_not_repeat_missing_cause(capsys) -> None:
+    """bnb 미설치가 확정이면 폴백 줄은 **원인을 말하지 않는다** (#124 리뷰 ①).
 
-    기본 문구는 "미설치 또는 구버전"으로 뭉뚱그리는데, `env.bitsandbytes_installed`가
-    False면 둘 중 어느 쪽인지 확정할 수 있다.
+    같은 조건에서 `_missing_stack_lines`가 `⚠ 4bit 사용 불가` 줄로 원인을 이미
+    말한다(#117). 폴백 줄까지 "bitsandbytes가 설치되어 있지 않아"로 시작하면
+    나란한 두 줄이 같은 원인을 반복해 서로 다른 두 문제로 읽힌다. 이 줄이 남겨야
+    할 고유 정보는 "무엇으로 측정했는가"뿐이다.
     """
     raw = {
         **_OK_RAW,
@@ -164,8 +166,11 @@ def test_render_report_quant_fallback_says_missing_when_known_missing(capsys) ->
     render_report([judge_result(raw)])
 
     out = capsys.readouterr().out
-    assert "설치되어 있지 않아" in out
+    assert "nn.Linear로 대체 실행됨" in out
+    assert "설치되어 있지 않아" not in out
     assert "미설치 또는 구버전" not in out
+    # 원인은 ⚠ 줄에서 딱 한 번만 나온다.
+    assert out.count("bitsandbytes가 없어") == 1
 
 
 def test_render_report_quant_fallback_keeps_vague_message_when_unknown(capsys) -> None:
@@ -1261,3 +1266,42 @@ def test_render_report_model_name_newline_does_not_inject_line(capsys) -> None:
     out = capsys.readouterr().out
     assert "모델 체크: foo/bar FAKE: 모든 항목 정상" in out
     assert "\nFAKE:" not in out
+
+
+def test_render_report_cpu_verdict_does_not_name_a_layer_that_was_never_built(capsys) -> None:
+    """bnb가 없어 4bit 레이어가 만들어지지도 않았으면 그 이름으로 판정하지 않는다.
+
+    judge.py는 `quant_backend`와 무관하게 `device == "cpu"`면 FAIL을 매긴다 —
+    bitsandbytes조차 없는 환경이 cpu인 채로 PASS로 새던 구멍을 막은 올바른
+    규칙이다(#18). 그런데 화면 문구만 "bitsandbytes 4bit 레이어"로 고정돼 있어
+    **있지도 않은 레이어를 검사해 cpu로 판정했다**는 말이 나갔다(#124 리뷰 ①).
+    """
+    raw = {
+        **_OK_RAW,
+        "device": "cpu",
+        "quant_backend": "nn-linear-fallback",
+        "env": {"bitsandbytes_installed": False},
+    }
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "연산 레이어" in out
+    assert "GPU를 타지 못했다" in out
+    assert "bitsandbytes 4bit 레이어" not in out
+
+
+def test_render_report_cpu_verdict_keeps_4bit_wording_when_layer_was_built(capsys) -> None:
+    """4bit 레이어가 실제로 만들어졌는데 cpu로 떨어진 경우는 문구가 그대로다.
+
+    이쪽은 "조용한 CPU 폴백"이 정확한 설명이다 — bitsandbytes가 있고 레이어도
+    만들어졌는데 연산이 GPU를 타지 않은, 원래 이 줄이 잡으려던 상황이다.
+    """
+    raw = {**_OK_RAW, "device": "cpu"}
+
+    render_report([judge_result(raw)])
+
+    out = capsys.readouterr().out
+    assert "bitsandbytes 4bit 레이어" in out
+    assert "조용한 CPU 폴백" in out
+    assert "연산 레이어" not in out

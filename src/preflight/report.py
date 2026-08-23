@@ -57,13 +57,18 @@ _MODEL_MODE_QUANT_FALLBACK_MESSAGE = (
     "4bit 레이어 구성 실패 → 양자화 없는 베이스로 실측됨 (VRAM 수치가 QLoRA 기준보다 크다)"
 )
 
-#: bitsandbytes가 **설치조차 안 된** 것이 확실한 경우의 문구(#60, #44).
-#: 기본 문구는 "미설치 또는 구버전"으로 뭉뚱그리는데, `env.bitsandbytes_installed`가
-#: False면 둘 중 어느 쪽인지 확정할 수 있어 그대로 알려준다.
-_BNB_MISSING_QUANT_FALLBACK_MESSAGE = (
-    "bitsandbytes가 설치되어 있지 않아 4bit 레이어 구성 실패 → nn.Linear로 대체 실행됨"
-    " (device=cpu 판정 생략)"
-)
+#: bitsandbytes가 **설치조차 안 된** 것이 확실한 경우의 폴백 문구(#60, #44).
+#:
+#: 원인("bitsandbytes가 없다")은 여기서 말하지 않는다 — 같은 조건에서
+#: `_missing_stack_lines`가 `⚠ 4bit 사용 불가` 줄로 이미 말하고(#117), 나란한 두
+#: 줄이 같은 원인을 반복하면 서로 다른 두 문제로 읽힌다(#124 리뷰 ①).
+#:
+#: "(device=cpu 판정 생략)"도 뺐다. judge.py는 `quant_backend`와 무관하게
+#: `device == "cpu"`면 언제나 FAIL을 매기므로(#18) **생략된 판정이 없다** —
+#: 바로 위 `✖ ... device=cpu 감지` 줄과 정면으로 어긋나는 말이었다.
+#:
+#: 그래서 이 줄이 남기는 고유 정보는 **무엇으로 측정했는가**(측정 전제) 하나다.
+_BNB_MISSING_QUANT_FALLBACK_MESSAGE = "nn.Linear로 대체 실행됨"
 
 _ERROR_LOG_MAX_CHARS = 200
 _TRUNCATION_NOTE = "(로그 일부만 표시 — 전문은 preflight check --json)"
@@ -403,6 +408,20 @@ def _memory_headroom_line(result: dict) -> _Line | None:
     return _Line("⚠", "yellow", f"VRAM 여유    {detail}", is_problem=True)
 
 
+def _is_quant_fallback(result: dict) -> bool:
+    """4bit 레이어 대신 nn.Linear로 폴백해서 잰 결과인가.
+
+    worker가 채우는 `quant_backend`와 judge가 붙이는 `quant_fallback` reason 중
+    **어느 쪽이든** 참이면 폴백으로 본다 — 같은 사실에 이르는 두 경로다.
+    폴백 줄(`_quant_fallback_line`)과 판정 줄(`_quant_lines`)이 서로 다른 기준을
+    쓰면 "폴백이라 4bit 레이어가 없다"와 "4bit 레이어가 cpu다"가 동시에 화면에
+    나간다 — 실제로 그렇게 어긋나 있었다(#124 리뷰 ①).
+    """
+    return result.get("quant_backend") == "nn-linear-fallback" or (
+        "quant_fallback" in result.get("reasons", [])
+    )
+
+
 def _quant_fallback_line(result: dict, model_mode: bool = False) -> _Line | None:
     """4bit 폴백이 있었다는 정보성 줄. 폴백이 아니면 None.
 
@@ -415,9 +434,7 @@ def _quant_fallback_line(result: dict, model_mode: bool = False) -> _Line | None
     폴백도 이제 베이스를 얼리고 LoRA만 학습하므로 전체 파인튜닝이 아니다. 여전히 큰
     쪽으로 틀리는 것은 양자화(4bit)가 빠진 부분뿐이다.
     """
-    if result.get("quant_backend") != "nn-linear-fallback" and (
-        "quant_fallback" not in result.get("reasons", [])
-    ):
+    if not _is_quant_fallback(result):
         return None
 
     if model_mode:
@@ -450,14 +467,17 @@ def _quant_lines(result: dict) -> list[_Line]:
     lines: list[_Line] = []
 
     if "quant_layer_device_cpu" in reasons:
-        lines.append(
-            _Line(
-                "✖",
-                "red",
-                "bitsandbytes 4bit 레이어    device=cpu 감지 → 조용한 CPU 폴백",
-                is_problem=True,
-            )
-        )
+        if _is_quant_fallback(result):
+            # bitsandbytes가 없어 4bit 레이어가 **아예 만들어지지 않은** 환경이다.
+            # 그런데도 "bitsandbytes 4bit 레이어"라고 적으면 있지도 않은 레이어를
+            # 검사해 cpu로 판정했다는 말이 된다. judge.py가 quant_backend와
+            # 무관하게 device=cpu를 FAIL로 매기면서(#18, 옳은 규칙) 화면 문구만
+            # 옛 전제에 남아 생긴 어긋남이다 — cpu에서 실제로 돈 것은 폴백된
+            # nn.Linear이고, 폴백 줄이 바로 아래에서 그렇게 말한다(#124 리뷰 ①).
+            text = "연산 레이어    device=cpu 감지 → GPU를 타지 못했다"
+        else:
+            text = "bitsandbytes 4bit 레이어    device=cpu 감지 → 조용한 CPU 폴백"
+        lines.append(_Line("✖", "red", text, is_problem=True))
 
     fallback_line = _quant_fallback_line(result)
     if fallback_line is not None:
