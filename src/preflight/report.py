@@ -364,7 +364,7 @@ def _missing_stack_lines(result: dict) -> list[_Line]:
     **`False`일 때만 말한다.** `None`은 `find_spec` 자체가 실패해 "모른다"는
     뜻이므로 아무 줄도 내지 않는다 — 멀쩡한 환경에 없는 문제를 만들지 않는다.
 
-    **기본 체크에서만 부른다**(`_build_lines`) — 설치 여부는 모델과 무관한 환경
+    **기본 체크에서만 부른다**(`_build_check_lines`) — 설치 여부는 모델과 무관한 환경
     사실이고, `--model` 모드는 결과가 2개라 양쪽에서 그리면 중복된다.
 
     문구가 **"우리 진단이 폴백했다"가 아니라 "당신 학습이 죽는다"** 를 말한다.
@@ -453,7 +453,7 @@ def _quant_lines(result: dict) -> list[_Line]:
     """기본 체크의 4bit 레이어 줄(들)이다.
 
     --model 모드는 4bit 레이어 자체를 판정 항목으로 보여주지 않고 VRAM·목표 크기
-    줄을 보여준다. 단 **폴백 줄만은 --model 모드에도 나간다**(_build_lines 참고) —
+    줄을 보여준다. 단 **폴백 줄만은 --model 모드에도 나간다**(_build_check_lines 참고) —
     폴백은 판정이 아니라 "지금 화면의 숫자가 무엇으로 측정된 값인지"를 말해주는
     정보라서, 없으면 fp32 기준 VRAM을 QLoRA 기준으로 오독하게 된다(#66).
 
@@ -520,8 +520,42 @@ def _is_model_mode(result: dict) -> bool:
     return result.get("model_name") is not None
 
 
-def _build_lines(result: dict) -> list[_Line]:
-    """result 하나로부터 화면에 찍힐 line item 목록을 만든다."""
+_VERDICT_GLYPH = {"PASS": "✔", "WARN": "⚠", "FAIL": "✖"}
+
+
+def _reverify_delta_line(result: dict) -> _Line | None:
+    """재확인 블록에 "수정 전 → 수정 후"를 한 줄로 남긴다 (#88).
+
+    재확인 결과는 1차 결과와 **교체된다**(cli.md "결과 집계"). 그래서 재확인
+    대상이 하나뿐인 경우(`--model` 없는 기본 체크만)에는 비교할 상대가 화면에
+    아예 없어, `--yes`가 사용자에게 파는 것("✖였던 게 ✔로 바뀐다")이 정작
+    보이지 않았다 — 표제의 "(재확인)" 말고는 `--yes`를 쓴 화면과 안 쓴 화면이
+    구별되지 않는다(#85 리뷰, 상영님 실측).
+
+    판정을 받은 항목이 아니라 **그 항목에 대한 설명**이므로
+    `counts_as_item=False`다 — 이 줄이 있든 없든 "N개 항목 확인"도
+    `summary.total_items`도 변하지 않는다(#88 완료 조건: 집계·종료 코드 불변).
+    """
+    if not result.get("reverified"):
+        return None
+    previous = result.get("previous_verdict")
+    current = result.get("verdict")
+    if previous is None or current is None:
+        # CLI가 1차 판정을 실어 보내지 않은 경우다(render_report를 직접 부르는
+        # 테스트·외부 호출). 비교할 것이 없으면 지금까지의 화면 그대로 둔다.
+        return None
+    before = f"{_VERDICT_GLYPH.get(previous, '·')} {previous}"
+    after = f"{_VERDICT_GLYPH.get(current, '·')} {current}"
+    text = f"수정 전 {before} → 수정 후 {after}"
+    if previous == current:
+        # 판정이 그대로면 사용자가 가장 알고 싶은 것은 "그래서 고쳐졌나"다.
+        # 화살표만 있으면 같은 값이 두 번 찍힌 것처럼 읽혀 되레 헷갈린다.
+        text += " (변화 없음)"
+    return _Line("ℹ", "dim", text, counts_as_item=False)
+
+
+def _build_check_lines(result: dict) -> list[_Line]:
+    """result 하나로부터 화면에 찍힐 **체크 줄** 목록을 만든다."""
     # 생략된 체크는 판정 필드가 통째로 없으므로 _status_line보다 먼저 걸러야 한다.
     if _is_skipped(result):
         return [_skipped_line(result)]
@@ -565,6 +599,21 @@ def _build_lines(result: dict) -> list[_Line]:
     return lines
 
 
+def _build_lines(result: dict) -> list[_Line]:
+    """체크 줄 + (재확인이라면) 수정 전/후 요약 줄.
+
+    요약 줄은 체크 줄 **뒤**에 붙는다. `_build_check_lines`는 `status`가 ok가
+    아니면 판정 줄 하나만 내고 일찍 끝나는데, **수정 후에도 여전히 실패한 경우가
+    바로 그 경로다** — "고쳐지지 않았다"를 알려줘야 하는 때라 그 경우에도 요약
+    줄이 나와야 한다(#88).
+    """
+    lines = _build_check_lines(result)
+    delta_line = _reverify_delta_line(result)
+    if delta_line is not None:
+        lines.append(delta_line)
+    return lines
+
+
 def _render_fix_block(console: Console, result: dict) -> None:
     fix = result.get("fix")
     if not fix:
@@ -576,7 +625,12 @@ def _render_fix_block(console: Console, result: dict) -> None:
         # 따라와 --index-url과 값이 분리된다(#91). soft_wrap은 자르지 않고
         # 터미널에 맡겨 문자열 자체에는 개행이 없게 한다.
         console.print(f"FIX: {fix_command}", soft_wrap=True)
-        console.print("재확인: preflight check --yes")
+        if not result.get("reverified"):
+            # 방금 `--yes`로 재확인을 마친 블록이다. 여기에 "재확인: preflight
+            # check --yes"를 다시 그리면, 그대로 따른 사용자는 같은 설치를 100초
+            # 넘게 들여 반복하고 똑같은 화면을 본다(#88, 상영님 실측). 수정이
+            # 듣지 않았다는 사실은 바로 위 "수정 전 → 수정 후" 줄이 말해준다.
+            console.print("재확인: preflight check --yes")
     else:
         message = fix.get("message", "")
         # 위 FIX: 줄과 같은 이유로 soft_wrap이 필요하다. `fix_command`가 없는
