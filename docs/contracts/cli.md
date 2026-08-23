@@ -205,7 +205,8 @@ $ preflight check --json
         "bnb_cpu_4bit_supported": null,
         "gpu_free_mb": 9420.0,
         "gpu_total_mb": 12282.0,
-        "gpu_driver_version": "560.94.03"
+        "gpu_driver_version": "560.94.03",
+        "gpu_name": "NVIDIA GeForce RTX 4070 Ti"
       },
       "fix": {
         "cause": "torch_cpu_only_build",

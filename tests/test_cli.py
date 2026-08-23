@@ -307,7 +307,12 @@ def test_check_yes_reverify_still_fail_leaves_model_check_skipped() -> None:
 
 
 def test_cli_check_with_model_injects_gpu_state() -> None:
-    fake_state = {"free_mb": 10000, "total_mb": 12000, "driver_version": "560.94.03"}
+    fake_state = {
+        "free_mb": 10000,
+        "total_mb": 12000,
+        "driver_version": "560.94.03",
+        "name": "NVIDIA GeForce RTX 4070 Ti",
+    }
     fake_raw_basic = {"status": "ok", "env": {"dummy": 1}}
     fake_raw_model = {"status": "ok", "env": {"dummy": 2}}
 
@@ -337,6 +342,7 @@ def test_cli_check_with_model_injects_gpu_state() -> None:
         assert model_call_arg["env"]["gpu_free_mb"] == 10000
         assert model_call_arg["env"]["gpu_total_mb"] == 12000
         assert model_call_arg["env"]["gpu_driver_version"] == "560.94.03"
+        assert model_call_arg["env"]["gpu_name"] == "NVIDIA GeForce RTX 4070 Ti"
 
 
 def test_fix_attaches_to_fail_not_to_earlier_warn() -> None:
