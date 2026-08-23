@@ -663,7 +663,7 @@ def test_build_dummy_model_surfaces_config_error(fake_bitsandbytes, monkeypatch)
 # --- meta 버퍼 실체화 (#134) ---
 
 
-def test_no_meta_buffers_remain_after_materialization(fake_transformers) -> None:
+def test_no_meta_buffers_remain_after_materialization(fake_transformers, fake_bitsandbytes) -> None:
     """실체화 후 meta로 남은 **버퍼**가 없어야 한다 (#134).
 
     `with torch.device("meta")`는 그 블록에서 만들어지는 **모든** 텐서를 meta로
@@ -683,7 +683,9 @@ def test_no_meta_buffers_remain_after_materialization(fake_transformers) -> None
     assert left_on_meta == [], left_on_meta
 
 
-def test_materialized_buffer_keeps_shape_dtype_and_persistence(fake_transformers) -> None:
+def test_materialized_buffer_keeps_shape_dtype_and_persistence(
+    fake_transformers, fake_bitsandbytes
+) -> None:
     """실체화한 버퍼가 원래 모양·자료형·persistent 여부를 유지한다 (#134).
 
     값은 0으로 채운다 — VRAM은 값이 아니라 모양·자료형으로 정해지므로 측정에 영향이
@@ -697,11 +699,14 @@ def test_materialized_buffer_keeps_shape_dtype_and_persistence(fake_transformers
 
     assert buf.shape == (8,)
     assert buf.device.type == "cpu"
+    # 실물 `inv_freq`는 모델이 float16이어도 float32다. `torch.zeros(..., dtype=buf.dtype)`가
+    # 원래 자료형을 지키는 것이 이 수정의 일부라, 그걸 고정한다.
+    assert buf.dtype == torch.float32
     # persistent=False로 등록했으므로 state_dict에 나오면 안 된다.
     assert "inv_freq" not in model.state_dict()
 
 
-def test_forward_runs_after_materialization(fake_transformers) -> None:
+def test_forward_runs_after_materialization(fake_transformers, fake_bitsandbytes) -> None:
     """실체화한 모델로 forward가 실제로 돈다 (#134).
 
     **이 단정이 이 이슈의 핵심이다.** 기존 테스트는 `Linear4bit` 개수만 세고 forward를
