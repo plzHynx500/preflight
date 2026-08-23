@@ -57,6 +57,8 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
     "torch_installed": True,            # find_spec 기반 — import 전에도 채워진다
     "transformers_installed": True,
     "bitsandbytes_installed": False,    # False면 "설치 안 됨" 확정. None은 "못 읽음"
+    "peft_installed": True,             # canary는 안 쓰지만 사용자 학습엔 필요하다
+    "accelerate_installed": True,       # peft가 하드 의존성으로 끌고 온다
 }
 ```
 
@@ -71,6 +73,8 @@ def run_canary_check(model_name: str | None, batch_size: int, seq_len: int) -> d
 > `cuda_visible_devices`만 예외다 — `os.environ.get()`은 import가 아니므로 실패할 수 없고, import 성패와 무관하게 항상 값(또는 `None`)이 채워진다. 그래도 자식이 채우는 이유는 그 값을 봐야 할 순간이 정확히 "자식이 본 CUDA 장치 가시성"이라서다(ADR-0008).
 
 항목은 **독립적으로 실패**할 수 있고, 실패한 항목만 `None`이 된다. 키는 **어느 경우에도 유지된다** — 소비자가 키 존재 여부까지 따로 방어하지 않게 하기 위함이다.
+
+**`*_installed`가 담는 것은 canary가 쓰는 라이브러리가 아니라 사용자의 QLoRA 학습에 필요한 라이브러리다.** canary는 `peft` 없이 LoRA 어댑터를 직접 만들고 `from_pretrained`를 안 타서 `accelerate`도 거치지 않지만, 사용자는 둘 다 있어야 학습이 돈다 — 우리가 우회한 만큼이 진단의 사각지대가 되지 않도록 함께 담는다(#117).
 
 **`*_installed`는 나머지와 채워지는 시점이 다르다.** `importlib.util.find_spec`은 모듈을 **찾기만 하고 실행하지 않으므로**, import를 시도하기 **전에** 그리고 import가 죽는 환경에서도 안전하게 읽을 수 있다(#44, #92). 그래서 `status == "import_crash"`인 결과에도 이 값들은 채워져 있다 — 자식이 죽기 전에 이미 담아 보냈기 때문이다.
 

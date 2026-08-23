@@ -325,7 +325,7 @@ def test_env_is_supplied_even_when_import_fails(fake_module) -> None:
     assert all(env[key] is None for key in import_only), env
 
     # find_spec 기반 — import 실패와 무관하게 채워진다
-    installed = ("torch_installed", "transformers_installed", "bitsandbytes_installed")
+    installed = [f"{name}_installed" for name in worker.CHECKED_LIBRARIES]
     assert all(env[key] in (True, False) for key in installed), env
 
 

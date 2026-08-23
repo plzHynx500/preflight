@@ -172,7 +172,7 @@ ENV_FIELDS = (
     # 현재 값을 화면에 보여준다. import 없이 읽는 값이라 import 실패와 무관하게
     # 항상 채워진다(설정 안 됐으면 None).
     "cuda_visible_devices",
-    # canary가 실제로 import하는 세 라이브러리의 **설치 여부**. `find_spec`으로 읽으므로
+    # QLoRA 학습에 필요한 라이브러리들의 **설치 여부**. `find_spec`으로 읽으므로
     # import를 시도하기 전에, import가 죽는 환경에서도 안전하게 채울 수 있다(#44, #92).
     #
     # 아래 `torch_version` 류와 뜻이 다르다 — 그쪽은 "import에 성공해서 읽은 값"이라
@@ -184,12 +184,20 @@ ENV_FIELDS = (
     "torch_installed",
     "transformers_installed",
     "bitsandbytes_installed",
+    "peft_installed",
+    "accelerate_installed",
 )
 
-#: `find_spec`으로 설치 여부를 확인할 라이브러리. canary가 실제로 import하는 것만 넣는다
-#: — 쓰지도 않는 라이브러리의 설치 여부를 보고하면 진단이 아니라 잡음이다.
-#: (`peft`는 쓰지 않는다 — LoRA 어댑터를 직접 만든다, model.py `_attach_manual_lora`.)
-CHECKED_LIBRARIES = ("torch", "transformers", "bitsandbytes")
+#: `find_spec`으로 설치 여부를 확인할 라이브러리.
+#:
+#: **canary가 쓰는 것이 아니라 사용자의 QLoRA 학습에 필요한 것**을 넣는다 — 둘은 다르다.
+#: canary는 `peft` 없이 LoRA 어댑터를 직접 만들고(model.py `_attach_manual_lora`),
+#: `from_pretrained`를 안 타서 `accelerate`도 거치지 않는다. 하지만 사용자가 실제로
+#: QLoRA 학습을 돌리려면 넷 다 있어야 하고, 없으면 첫 줄에서 ImportError로 죽는다.
+#: **"우리가 안 쓴다"는 이유로 빼면 canary가 우회한 만큼이 그대로 진단의 사각지대가 된다**(#117).
+#:
+#: 여기서는 값을 `env`에 담기만 한다 — 판정·문구·수정 명령에 쓰는 것은 #117의 몫이다.
+CHECKED_LIBRARIES = ("torch", "transformers", "bitsandbytes", "peft", "accelerate")
 
 
 def _installed_env() -> dict:
