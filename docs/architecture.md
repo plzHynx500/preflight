@@ -77,6 +77,8 @@ result = run_canary(model, batch_size=target_batch_size, seq_len=target_seq_len)
 
 `--model` 실행은 **항상** QLoRA(4bit 양자화 + LoRA 어댑터) + AdamW로 canary를 구성한다 — 이건 선택 사항이 아니라 MVP의 고정 동작이다. 사용자가 플래그로 이 값을 바꾸는 기능(LoRA/양자화/옵티마이저 override, 학습 스크립트 정적 파싱, unsloth 분기 실행)만 MVP 이후 확장 범위다 — 상세 우선순위는 Notion SRS 로드맵을 따른다.
 
+**단, "이 수치가 vanilla 경로 기준"이라는 안내 문구는 MVP 범위에 포함한다**(#118). canary는 `AutoModelForCausalLM`으로 직접 로드해 vanilla(eager) 경로로 실행하므로, Unsloth처럼 커널을 몽키패치하는 프레임워크를 쓰면 실사용량이 측정값보다 작다. 방향은 안전한 쪽이지만 **우리가 부족하다고 말한 환경에서 실제로는 학습이 되는 false negative**가 남고, SRS §3의 1번 사용자 시나리오가 곧 unsloth 사용자다. 감지·분기 실행(FR-14(3))은 여전히 향후지만, 한계를 밝히는 것까지 미루면 그 사용자가 오답을 받는다.
+
 > 4bit·LoRA를 빼고 fp32 전체 모델을 그대로 구성하면 8B급 모델 기준 가중치 32GB+gradient 32GB+AdamW 상태 64GB=128GB가 필요해 12GB급 GPU에서는 사실상 항상 OOM이 나서 VRAM 실측 자체가 불가능해진다(2026-08-03, PR #12 리뷰 중 발견). SRS §2가 전제하는 사용자("QLoRA로 12GB 카드에서 파인튜닝하려는 사람")에게 fp32 풀파인튜닝 기준 수치를 보여주는 건 진단이 아니라 오답이다.
 
 ---

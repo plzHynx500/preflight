@@ -103,6 +103,32 @@ def _aggregate_verdict(results: list[dict]) -> str:
     return "FAIL" if "FAIL" in verdicts else "WARN" if "WARN" in verdicts else "PASS"
 
 
+#: `--model` 의 VRAM 실측값이 무엇을 기준으로 잰 값인지 밝히는 안내(#118).
+#:
+#: canary 는 `AutoModelForCausalLM` 으로 직접 로드해 **vanilla(eager) 경로**로
+#: 실행한다. Unsloth 처럼 attention·RoPE·cross-entropy 커널을 몽키패치하는
+#: 프레임워크를 쓰면 실사용량이 이 수치보다 작다 — 방향은 안전한 쪽이지만,
+#: **우리가 부족하다고 말한 환경에서 실제로는 학습이 되는 false negative** 가
+#: 남는다. SRS §3 의 1번 사용자 시나리오가 곧 unsloth 사용자다.
+#:
+#: 수치를 보정하거나 프레임워크를 감지하지 않는다 — 감지·분기 실행은 FR-14(3),
+#: 프레임워크 독립성은 NFR-06 이다. 여기서는 한계만 밝힌다.
+_VANILLA_PATH_NOTICE = (
+    "참고: VRAM 실측값은 vanilla(HuggingFace 기본) 실행 경로 기준입니다. "
+    "Unsloth 등 커널 최적화 프레임워크를 쓰면 실제 사용량은 이보다 작을 수 있습니다."
+)
+
+
+def _model_check_ran(results: list[dict]) -> bool:
+    """모델 체크가 실제로 돌아 VRAM 수치가 화면에 있는가 (#118).
+
+    `--model` 을 줬어도 기본 체크가 FAIL 이면 모델 체크는 생략된다. 그때는
+    보여줄 VRAM 수치가 없으므로 **그 수치의 기준을 설명하는 안내도 내지 않는다**
+    — 없는 숫자에 대한 주석은 잡음이다.
+    """
+    return any(result.get("model_name") and "skipped" not in result for result in results)
+
+
 def _select_fix_target(results: list[dict]) -> dict | None:
     """FIX를 붙일 항목 하나를 고른다 — **FAIL을 WARN보다 먼저 본다**(#69).
 
@@ -212,6 +238,8 @@ def check(
     fix = fix_target.get("fix") if fix_target else None
 
     notices: list[str] = []
+    if _model_check_ran(results):
+        notices.append(_VANILLA_PATH_NOTICE)
     if yes and fix:
         command = fix.get("fix_command")
         if not fix.get("fix_argv"):

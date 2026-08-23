@@ -673,3 +673,55 @@ def test_seq_len_cause_reads_seq_len_from_cli_meta() -> None:
     assert fix["cause"] == "seq_len_exceeds_model_max", results[1]
     # 준 값과 허용 최대값이 둘 다 문구에 있어야 사용자가 얼마로 줄일지 안다.
     assert "1024" in fix["message"] and "512" in fix["message"], fix["message"]
+
+
+# --- vanilla 경로 기준이라는 안내 (#118) ---
+
+
+def _render_with(results: list[dict], args: list[str]):
+    """CLI 를 끝까지 돌리고 `render_report` 가 받은 notices 를 돌려준다."""
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", return_value={"status": "ok"}),
+        patch("preflight.cli.judge_result", side_effect=results),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        runner.invoke(app, args)
+    return mock_render.call_args.kwargs["notices"]
+
+
+_PASS = {"status": "ok", "device": "cuda", "verdict": "PASS", "reasons": []}
+
+
+def test_model_check_notes_the_measurement_is_vanilla_based() -> None:
+    """`--model` 의 VRAM 수치가 무엇을 기준으로 잰 값인지 밝힌다 (#118).
+
+    canary 는 vanilla(eager) 경로로 실행하므로 Unsloth 등 커널 최적화 프레임워크를
+    쓰면 실사용량이 더 작다 — 우리가 "부족하다"고 말한 환경에서 실제로는 학습이
+    되는 false negative 가 남는다. SRS §3 의 1번 사용자 시나리오가 곧 unsloth
+    사용자라 이 한계를 밝히지 않으면 그 사람이 오답을 받는다.
+    """
+    notices = _render_with([_PASS, _PASS], ["check", "--model", "dummy/model"])
+
+    assert any("vanilla" in notice for notice in notices), notices
+    assert any("Unsloth" in notice for notice in notices), notices
+
+
+def test_basic_check_does_not_note_vanilla_path() -> None:
+    """기본 체크는 VRAM 수치를 내지 않으므로 안내도 없다 — 없는 숫자에 대한 주석은 잡음이다."""
+    notices = _render_with([_PASS], ["check"])
+
+    assert not any("vanilla" in notice for notice in notices), notices
+
+
+def test_skipped_model_check_does_not_note_vanilla_path() -> None:
+    """기본 체크가 FAIL 이면 모델 체크가 생략돼 보여줄 VRAM 수치가 없다 (#118)."""
+    basic_fail = {
+        "status": "oom",
+        "device": "cuda",
+        "verdict": "FAIL",
+        "reasons": ["status_oom"],
+    }
+    notices = _render_with([basic_fail], ["check", "--model", "dummy/model"])
+
+    assert not any("vanilla" in notice for notice in notices), notices
