@@ -705,3 +705,94 @@ def test_seq_len_cause_reads_seq_len_from_cli_meta() -> None:
     assert fix["cause"] == "seq_len_exceeds_model_max", results[1]
     # 준 값과 허용 최대값이 둘 다 문구에 있어야 사용자가 얼마로 줄일지 안다.
     assert "1024" in fix["message"] and "512" in fix["message"], fix["message"]
+
+
+# --- vanilla 경로 기준이라는 안내 (#118) ---
+
+
+def _render_with(results: list[dict], args: list[str]):
+    """CLI 를 끝까지 돌리고 `render_report` 가 받은 notices 를 돌려준다."""
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", return_value={"status": "ok"}),
+        patch("preflight.cli.judge_result", side_effect=results),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        runner.invoke(app, args)
+    return mock_render.call_args.kwargs["notices"]
+
+
+_PASS = {"status": "ok", "device": "cuda", "verdict": "PASS", "reasons": []}
+
+
+def test_model_check_notes_the_measurement_is_vanilla_based() -> None:
+    """`--model` 의 VRAM 수치가 무엇을 기준으로 잰 값인지 밝힌다 (#118).
+
+    canary 는 vanilla(eager) 경로로 실행하므로 Unsloth 등 커널 최적화 프레임워크를
+    쓰면 실사용량이 더 작다 — 우리가 "부족하다"고 말한 환경에서 실제로는 학습이
+    되는 false negative 가 남는다. SRS §3 의 1번 사용자 시나리오가 곧 unsloth
+    사용자라 이 한계를 밝히지 않으면 그 사람이 오답을 받는다.
+    """
+    notices = _render_with([_PASS, _PASS], ["check", "--model", "dummy/model"])
+
+    assert any("vanilla" in notice for notice in notices), notices
+    assert any("Unsloth" in notice for notice in notices), notices
+
+
+def test_basic_check_does_not_note_vanilla_path() -> None:
+    """기본 체크는 VRAM 수치를 내지 않으므로 안내도 없다 — 없는 숫자에 대한 주석은 잡음이다."""
+    notices = _render_with([_PASS], ["check"])
+
+    assert not any("vanilla" in notice for notice in notices), notices
+
+
+def test_skipped_model_check_does_not_note_vanilla_path() -> None:
+    """기본 체크가 FAIL 이면 모델 체크가 생략돼 보여줄 VRAM 수치가 없다 (#118)."""
+    basic_fail = {
+        "status": "oom",
+        "device": "cuda",
+        "verdict": "FAIL",
+        "reasons": ["status_oom"],
+    }
+    notices = _render_with([basic_fail], ["check", "--model", "dummy/model"])
+
+    assert not any("vanilla" in notice for notice in notices), notices
+
+
+def test_vanilla_notice_survives_the_yes_reverify_path() -> None:
+    """`--yes` 로 되살아난 모델 체크에도 vanilla 안내가 붙는다 (#118, PR #129 리뷰).
+
+    **판단 시점이 문제였다.** 기본 체크 FAIL → `--yes` 로 수정 → 생략됐던 모델 체크를
+    이어서 실행하는 경로(#84)에서는 `results` 가 나중에 채워진다. 안내 여부를 앞에서
+    정하면 그때 실제로 돈 모델 체크에는 안내가 빠져서, **VRAM 부족 FAIL 을 보여주면서
+    그게 vanilla 기준이라는 걸 안 알려주는** — 이 안내가 막으려던 바로 그 상황이 이
+    경로에만 남는다.
+
+    기존 세 테스트는 `--yes` 를 안 써서 이 구멍을 못 봤다.
+    """
+    raw_basic = {"status": "import_crash", "error_log": "libbitsandbytes_cpu.so: CUDA error"}
+    basic_initial = {
+        "status": "import_crash",
+        "verdict": "FAIL",
+        "reasons": ["import_crash"],
+        "error_log": "libbitsandbytes_cpu.so: CUDA error",
+    }
+    reverified = {"status": "ok", "device": "cuda", "verdict": "PASS", "reasons": []}
+    model_res = {"status": "oom", "device": "cuda", "verdict": "FAIL", "reasons": ["status_oom"]}
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", side_effect=[raw_basic, {"status": "oom"}]),
+        patch("preflight.cli.judge_result", side_effect=[basic_initial, model_res]),
+        patch("preflight.cli.apply_fix"),
+        patch("preflight.cli.reverify", return_value=reverified),
+        patch("preflight.cli.render_report") as mock_render,
+    ):
+        runner.invoke(app, ["check", "--model", "dummy/model", "--yes"])
+
+    results = mock_render.call_args.args[0]
+    notices = mock_render.call_args.kwargs["notices"]
+
+    # 모델 체크가 실제로 되살아났는지 먼저 확인 — 아니면 이 테스트가 의미 없다.
+    assert "skipped" not in results[1], results[1]
+    assert any("vanilla" in notice for notice in notices), notices
