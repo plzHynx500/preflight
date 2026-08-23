@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import subprocess
 import sys
@@ -447,6 +448,37 @@ def test_seq_len_zero_is_rejected_by_parser() -> None:
 
     assert result.exit_code != 0
     assert "seq-len" in _strip_ansi(result.output)
+
+
+def test_model_empty_string_is_rejected_by_parser() -> None:
+    """`--model ""`은 canary를 돌리기 전에 파서가 거부한다 (#126).
+
+    빈 문자열은 파이썬에서 falsy라 `if model:`이 "값 없음(`None`)"과 구분하지
+    못해, 모델 체크 자체가 에러도 경고도 없이 통째로 사라졌었다 — CI에서
+    `--model "$MODEL"`의 변수가 비었을 때 특히 위험한 조용한 실패였다.
+    """
+    result = runner.invoke(app, ["check", "--model", ""])
+
+    assert result.exit_code != 0
+    assert "model" in _strip_ansi(result.output)
+
+
+def test_model_unset_is_unaffected_by_empty_string_validation() -> None:
+    """`--model` 자체를 생략하면(`None`) 기존 동작 그대로 기본 체크 1개만 나온다 (#126)."""
+    fake_raw_basic = {"status": "ok"}
+    fake_basic_res = {"verdict": "PASS"}
+
+    with (
+        patch("preflight.cli.query_gpu_state", return_value=None),
+        patch("preflight.cli.run_canary_check", return_value=fake_raw_basic),
+        patch("preflight.cli.judge_result", return_value=fake_basic_res) as mock_judge,
+    ):
+        result = stderr_runner.invoke(app, ["check", "--json"])
+
+    assert result.exit_code == 0
+    assert mock_judge.call_count == 1
+    payload = json.loads(result.stdout)
+    assert len(payload["results"]) == 1
 
 
 def test_top_level_help_survives_redirect() -> None:
