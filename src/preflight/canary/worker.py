@@ -184,6 +184,12 @@ ENV_FIELDS = (
     # 현재 값을 화면에 보여준다. import 없이 읽는 값이라 import 실패와 무관하게
     # 항상 채워진다(설정 안 됐으면 None).
     "cuda_visible_devices",
+    # 모델 config가 말하는 최대 위치 길이. `--model` 모드에서 config를 읽은 뒤에만
+    # 채워지고, 기본 체크나 속성이 없는 모델에서는 None으로 남는다.
+    #
+    # `seq_len`이 이 값을 넘으면 **위치 인코딩이 테이블 방식인 모델만** 죽는다
+    # (#86) — 부모가 그 판정을 하려면 값이 실패 결과에도 실려 있어야 한다.
+    "model_max_position",
     # QLoRA 학습에 필요한 라이브러리들의 **설치 여부**. `find_spec`으로 읽으므로
     # import를 시도하기 전에, import가 죽는 환경에서도 안전하게 채울 수 있다(#44, #92).
     #
@@ -414,12 +420,48 @@ def _run(torch, spec: dict, env: dict) -> dict:
     return _run_model_check(torch, model_name, batch_size, seq_len, env)
 
 
+#: 모델 config에서 최대 위치 길이를 담는 속성 이름 — 앞에서부터 시도한다(#86).
+#:
+#: transformers 5.14.1 의 `configuration_*.py` 482개를 실제로 세어본 결과다:
+#:
+#:   max_position_embeddings   257개   현행 표준. 대부분 여기서 끝난다
+#:   n_positions                 8개   GPT-2 계열
+#:   max_seq_len                 2개   MPT · DBRX
+#:
+#: GPT-2 는 config 가 실제로는 `n_positions` 에 담지만 `attribute_map` 으로 별칭이
+#: 걸려 있어(`configuration_gpt2.py:73`, 이런 config 가 18개) 첫 이름으로도 읽힌다 —
+#: #86 재현에서 tiny-random-gpt2 가 512로 읽힌 것이 그 증거다. `n_positions` 는 그
+#: 별칭이 없는 커스텀 config 를 위한 방어다.
+#:
+#: **셋 다 없는 config 도 많다**(비전·오디오 타워 등 텍스트 위치 한계가 없는 것들).
+#: 그때는 None 이고, 받는 쪽은 단정하지 않는다 — 아래 docstring 참고.
+_MAX_POSITION_ATTRS = ("max_position_embeddings", "n_positions", "max_seq_len")
+
+
+def _max_position_len(config) -> int | None:
+    """모델 config가 말하는 최대 위치 길이. 못 읽으면 None.
+
+    **"없음"을 "제한 없음"으로 읽지 않는다.** 속성이 하나도 없으면 그 모델의
+    한계를 모르는 것이지 한계가 없는 것이 아니다 — None을 받은 쪽은 단정하지
+    않고 기존 분류로 흘려보낸다("모르는 것"과 "아닌 것"을 섞지 않는다).
+    """
+    for attr in _MAX_POSITION_ATTRS:
+        value = getattr(config, attr, None)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
 def _run_model_check(torch, model_name: str, batch_size: int, seq_len: int, env: dict) -> dict:
     from preflight.canary.model import build_dummy_input as build_hf_dummy_input
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model, config, quant_backend = build_dummy_model(model_name, device)
+    # **forward보다 먼저 담는다.** seq_len 초과는 GPU 커널 안에서 터지는데, 부모가
+    # 그걸 원인으로 특정하려면 이 값이 실패 결과에 실려 있어야 한다. `env`는
+    # main()이 준 것과 같은 dict라 여기서 채우면 예외 경로의 기록에도 그대로 남는다.
+    env["model_max_position"] = _max_position_len(config)
     dummy_input = build_hf_dummy_input(batch_size, seq_len, config.vocab_size, device)
 
     measured = _execute_canary_cycle(torch, model, dummy_input, device, quant_backend)

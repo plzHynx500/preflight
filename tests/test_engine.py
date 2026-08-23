@@ -7,6 +7,8 @@
 import json
 import subprocess
 import sys
+import types
+from unittest import mock
 
 import pytest
 
@@ -535,3 +537,81 @@ def test_base_layer_device_falls_back_to_first_param_when_nothing_is_frozen() ->
 def test_base_layer_device_is_none_without_any_parameter() -> None:
     """파라미터가 아예 없으면 여전히 None — 말할 수 있는 device가 없다."""
     assert worker._base_layer_device(_StubModel()) is None
+
+
+# --- 모델 최대 위치 길이 읽기 (#86) ---
+
+
+class _Cfg:
+    def __init__(self, **attrs):
+        for key, value in attrs.items():
+            setattr(self, key, value)
+
+
+def test_max_position_len_prefers_the_modern_attribute() -> None:
+    """둘 다 있으면 `max_position_embeddings`를 먼저 본다.
+
+    transformers 5.x는 GPT-2도 이 이름을 쓴다. `n_positions`는 옛 config가
+    직렬화해둔 경우를 위해 뒤따라 시도할 뿐이다.
+    """
+    assert worker._max_position_len(_Cfg(max_position_embeddings=2048, n_positions=512)) == 2048
+
+
+@pytest.mark.parametrize(
+    "attrs, expected",
+    [
+        ({"max_position_embeddings": 512}, 512),
+        # GPT-2 계열의 attribute_map 별칭이 없는 커스텀 config용 방어 경로
+        ({"n_positions": 1024}, 1024),
+        # MPT · DBRX
+        ({"max_seq_len": 2048}, 2048),
+    ],
+)
+def test_max_position_len_reads_each_known_attribute(attrs: dict, expected: int) -> None:
+    assert worker._max_position_len(_Cfg(**attrs)) == expected
+
+
+@pytest.mark.parametrize(
+    "attrs",
+    [
+        {},  # 속성이 하나도 없는 모델
+        {"max_position_embeddings": None},
+        {"max_position_embeddings": 0},
+        {"max_position_embeddings": True},  # bool은 int의 하위형이라 따로 막는다
+        {"max_position_embeddings": "512"},
+    ],
+)
+def test_max_position_len_is_none_when_unreadable(attrs: dict) -> None:
+    """못 읽으면 None이다 — "제한 없음"이 아니라 "모름"이다 (#86).
+
+    이 값을 받는 쪽(causes.py)은 None이면 단정하지 않고 기존 분류로 흘려보낸다.
+    """
+    assert worker._max_position_len(_Cfg(**attrs)) is None
+
+
+def test_model_check_fills_env_in_place_before_the_canary_runs() -> None:
+    """`_run_model_check`는 **건네받은 `env`를 제자리에서** 채운다 (#86).
+
+    **배선을 지키는 테스트다.** 커널 assert는 forward에서 터지고, 그때 결과를
+    기록하는 것은 `main()`이다 — 자기가 만든 `env`로 `_blank_result`를 부른다.
+    `_run_model_check`가 값을 그 dict에 **직접** 넣어야만 크래시 기록에 실린다.
+
+    `env = {**env, ...}`처럼 새 dict를 만들어 이름만 갈아끼우면 함수 안에서만
+    유효해져 **크래시 경로에서 값이 조용히 사라진다** — 정상 경로는 결과 dict에
+    `"env": env`로 담아 돌려주므로 멀쩡해 보인다. 리팩터링 중에 나오기 쉬운 변경이라
+    여기서 못박는다.
+    """
+    env = worker._empty_env()
+    config = _Cfg(max_position_embeddings=512, vocab_size=32)
+    fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False))
+
+    with (
+        mock.patch.object(worker, "build_dummy_model", return_value=(object(), config, "bnb-4bit")),
+        mock.patch("preflight.canary.model.build_dummy_input", return_value=object()),
+        mock.patch.object(worker, "_execute_canary_cycle", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError),
+    ):
+        worker._run_model_check(fake_torch, "dummy/model", 1, 1024, env)
+
+    # 건네준 바로 그 dict에 들어가 있어야 한다.
+    assert env["model_max_position"] == 512

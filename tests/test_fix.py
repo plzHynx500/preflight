@@ -852,3 +852,78 @@ def test_cli_check_with_yes_reverify_pass_exits_0() -> None:
         result = runner.invoke(app, ["check", "--yes"])
         assert result.exit_code == 0
         mock_apply_fix.assert_called_once()
+
+
+# ── seq_len이 모델 최대 위치 길이를 넘긴 경우 (#86) ──────────────────────────
+
+_ASSERT_LOG = (
+    "torch.AcceleratorError: CUDA error: device-side assert triggered "
+    "CUDA kernel errors might be asynchronously reported at some other API call, "
+    "so the stacktrace below might be incorrect."
+)
+
+
+def _kernel_assert(seq_len=None, max_position=None, error_log: str = _ASSERT_LOG) -> dict:
+    result = {
+        "status": "error",
+        "verdict": "FAIL",
+        "reasons": ["status_error"],
+        "error_log": error_log,
+        "env": {"model_max_position": max_position},
+    }
+    if seq_len is not None:
+        result["seq_len"] = seq_len
+    return result
+
+
+def test_seq_len_over_model_max_is_classified() -> None:
+    """커널 assert + 수치 초과, 두 근거가 다 있을 때만 단정한다 (#86)."""
+    assert classify_cause(_kernel_assert(seq_len=1024, max_position=512)) == (
+        "seq_len_exceeds_model_max"
+    )
+
+
+def test_seq_len_note_carries_both_numbers() -> None:
+    """준 값과 허용 최대값을 함께 알려준다 — "너무 큽니다"만으론 얼마로 줄일지 모른다."""
+    fix = suggest_fix(_kernel_assert(seq_len=1024, max_position=512))
+
+    assert fix is not None
+    assert "1024" in fix["message"] and "512" in fix["message"], fix["message"]
+    # 고칠 대상이 패키지가 아니라 사용자가 준 인자라 --yes가 실행할 것이 없다.
+    assert fix["fix_command"] is None
+
+
+def test_seq_len_equal_to_model_max_is_not_classified() -> None:
+    """경계값은 초과가 아니다 — 실측상 seq_len == n_positions는 정상 통과한다."""
+    assert classify_cause(_kernel_assert(seq_len=512, max_position=512)) == "unknown_error"
+
+
+@pytest.mark.parametrize(
+    "seq_len, max_position",
+    [
+        (1024, None),  # 속성이 없는 모델 — "제한 없음"이 아니라 "모름"
+        (None, 512),  # 기본 체크 등 seq_len이 결과에 없는 경로
+        (None, None),
+    ],
+)
+def test_unknown_lengths_do_not_claim_seq_len_cause(seq_len, max_position) -> None:
+    """둘 중 하나라도 못 읽었으면 단정하지 않고 기존 분류로 흘려보낸다 (#86)."""
+    assert classify_cause(_kernel_assert(seq_len, max_position)) == "unknown_error"
+
+
+def test_other_device_side_assert_is_not_hijacked() -> None:
+    """수치 근거가 없으면 커널 assert라도 이 원인으로 가로채지 않는다.
+
+    문자열 하나로 단정하면 #51·#93과 같은 부류의 오분류가 된다 — 그때도 로그에
+    특정 단어가 있다는 이유만으로 무관한 원인을 붙였다.
+    """
+    assert classify_cause(_kernel_assert(seq_len=64, max_position=512)) == "unknown_error"
+
+
+def test_seq_len_cause_needs_the_kernel_assert_signature() -> None:
+    """수치만 초과하고 커널 assert가 아니면 이 원인이 아니다 — RoPE 모델의 OOM 등."""
+    result = _kernel_assert(
+        seq_len=1024, max_position=512, error_log="RuntimeError: something else"
+    )
+
+    assert classify_cause(result) == "unknown_error"
