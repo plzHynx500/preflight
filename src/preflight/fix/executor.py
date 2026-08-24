@@ -59,14 +59,27 @@ def _torch_cuda_reinstall_args(tag: str) -> list[str]:
     ]
 
 
-#: 드라이버가 없거나 못 읽었을 때, 또는 아래 표의 어떤 구간에도 안 들 때 떨어지는
-#: 기본 휠 태그다. cu124는 비교적 오래된 CUDA 12.4용이라 최신 드라이버에서도 대체로
-#: 동작한다(#82 원안의 기존 고정값을 그대로 유지).
+#: 아래 표의 어떤 구간에도 안 들 때(= **드라이버 major가 560 미만**) 떨어지는 휠 태그.
+#:
+#: **cu124는 torch 2.6.0에 동결돼 있다**(download.pytorch.org 실측 2026-08: cu124→2.6.0,
+#: cu126→2.13.0, cu130→2.13.0). 매핑 표가 cu124를 후보에서 뺀 이유가 바로 그 동결인데,
+#: 폴백으로는 계속 쓴다 — 모순처럼 보이지만 **두 자리의 질문이 다르다**(#168).
+#:
+#: - 표: "이 드라이버로 받을 수 있는 **가장 최신** torch는?" → 동결 태그는 역효과
+#: - 폴백: "드라이버가 560 미만인데 **그래도 되는** 휠은?" → 낮은 CUDA 요구치가 맞다
+#:
+#: 즉 여기서 오래된 torch를 받는 것은 사고가 아니라 **드라이버가 오래됐다는 사실의
+#: 결과**다. 최신 torch를 원하면 고쳐야 할 것은 휠 태그가 아니라 드라이버다.
+#:
+#: 그래서 **GPU 자체가 조회되지 않은 경우에는 이 태그를 쓰지 않는다** — 아래
+#: `torch_cpu_only_build_no_gpu`가 특정 태그를 찍는 대신 pytorch.org로 보낸다.
+#: 아무 근거도 없는데 태그를 찍는 것은 추측이고, 이 도구가 하지 않기로 한 일이다.
+#:
+#: **GPU는 보이는데 버전 문자열만 못 읽는 경우는 다르다.** NVML이 GPU를 조회했다면
+#: 드라이버는 실재하고, 읽지 못한 것은 문자열뿐이다. 그때는 후보 중 **요구치가 가장
+#: 낮은** 이 태그로 떨어지는 것이 보수적으로 옳다 — Blackwell이면 `gpu_name`이
+#: 따로 잡아 cu128로 끌어올린다(ADR-0009).
 _DEFAULT_TORCH_CUDA_TAG = "cu124"
-_TORCH_CUDA_REINSTALL_DISPLAY = (
-    "pip install --force-reinstall torch --index-url"
-    f" https://download.pytorch.org/whl/{_DEFAULT_TORCH_CUDA_TAG}"
-)
 
 #: 드라이버 **major 브랜치 번호**(버전 문자열 첫 자리, 예: "595.79" → 595) → 골라줄
 #: PyTorch CUDA 휠 태그. 내림차순으로 두고 처음 만족하는 구간을 쓴다.
@@ -206,8 +219,9 @@ _FIX_MAP: dict[str, tuple[str, list[str] | None]] = {
     "torch_cpu_only_build_no_gpu": (
         (
             "설치된 torch가 CPU 전용 빌드이고 (torch.version.cuda 없음) NVIDIA GPU도"
-            " 조회되지 않았다 — GPU 기계라면 드라이버 확인 후 CUDA 빌드 torch 재설치가"
-            f" 필요하다: {_TORCH_CUDA_REINSTALL_DISPLAY}"
+            " 조회되지 않았습니다 — GPU 기계라면 드라이버를 먼저 확인하고, 그 뒤"
+            " https://pytorch.org/get-started/locally/ 에서 환경에 맞는 설치 명령을"
+            " 확인하세요"
         ),
         # GPU가 실제로 보이지 않는 상태에서 2GB가 넘는 CUDA 빌드를 자동으로 받아봐야
         # 달라지는 게 없다 — 명령은 위 문구로 안내만 하고 --yes 대상에서 뺀다.
