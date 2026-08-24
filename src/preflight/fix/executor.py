@@ -265,6 +265,17 @@ _FIX_MAP: dict[str, tuple[str, list[str] | None]] = {
     # 조합마다 cause를 만들지 않는 이유: 라이브러리가 하나 늘 때마다 조합이
     # 배로 늘어난다. cause는 하나로 두고 명령만 조립한다(torch_not_installed가
     # 드라이버를 보고 휠 태그를 고르는 것과 같은 기계다, #82·ADR-0007).
+    "transformers_rejects_torch": (
+        (
+            "설치된 transformers가 이 torch를 인식하지 못합니다 —"
+            " transformers가 요구하는 버전으로 torch를 올려야 합니다"
+        ),
+        # 실제 args는 suggest_fix()가 드라이버를 보고 만든다 — torch_cpu_only_build와
+        # 같은 기계다. **맨몸 `pip install --upgrade torch`를 쓰지 않는다**: Windows의
+        # 기본 PyPI 휠은 CPU 전용이라, 버전만 올라가고 GPU를 못 쓰는 더 나쁜 상태가
+        # 된다(#55 실측). 여기 값은 자리만 차지하며 쓰이지 않는다.
+        None,
+    ),
     "qlora_stack_not_installed": (
         "QLoRA 학습에 필요한 라이브러리가 설치되어 있지 않습니다",
         None,
@@ -347,6 +358,21 @@ def suggest_fix(check_result: dict) -> dict | None:
         env = check_result.get("env") or {}
         tag = _torch_cuda_tag_for_env(env)
         args = _torch_cuda_reinstall_args(tag)
+    if cause == "transformers_rejects_torch":
+        # "torch를 올려라"인데, **어떤 torch인지가 중요하다.** 맨몸
+        # `pip install --upgrade torch`는 Windows에서 CPU 전용 휠을 받아 버전만
+        # 올라가고 GPU는 못 쓰는 상태를 만든다 — `torch_cpu_only_build`가 잡는 바로
+        # 그 상태다(#55). 그래서 같은 드라이버 인식 기계를 쓴다(#175).
+        env = check_result.get("env") or {}
+        if env.get("gpu_free_mb") is None:
+            # NVIDIA GPU가 안 보이는데 2GB짜리 CUDA 빌드를 자동으로 받게 하지 않는다 —
+            # `torch_cpu_only_build_no_gpu`와 같은 판단이다. 안내만 하고 --yes에서 뺀다.
+            message += (
+                " (NVIDIA GPU가 조회되지 않아 자동 설치는 하지 않습니다 —"
+                " https://pytorch.org/get-started/locally/ 에서 환경에 맞는 명령을 확인하세요)"
+            )
+        else:
+            args = _torch_cuda_reinstall_args(_torch_cuda_tag_for_env(env))
     if cause == "qlora_stack_not_installed":
         assembled = _qlora_stack_fix(check_result.get("env") or {})
         if assembled is not None:

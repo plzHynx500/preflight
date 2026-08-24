@@ -102,6 +102,16 @@ class ModelConfigError(RuntimeError):
     """
 
 
+class TransformersTorchMismatchError(ModelConfigError):
+    """설치된 transformers가 이 torch를 인식하지 못한다 (#170, #175).
+
+    `ModelConfigError`를 그대로 쓰지 않고 따로 두는 이유는 **원인 분류가 이 경우를
+    안정적으로 알아볼 수 있게** 하기 위해서다. `error_log`에는 한국어 메시지밖에 안
+    남아서, 원인 분류가 그 문장을 매칭하면 문구를 다듬는 순간 조용히 깨진다.
+    클래스 이름은 번역되지 않는 식별자라 그 결합이 생기지 않는다(#175).
+    """
+
+
 def _require_transformers_accepts_torch() -> None:
     """설치된 transformers가 이 torch를 인식하는지 먼저 확인한다 (#170).
 
@@ -144,7 +154,7 @@ def _require_transformers_accepts_torch() -> None:
     # 넣는다** — 실측으로 `pip install --upgrade` / `torch`로 쪼개지는 것을 확인했다.
     # 복사할 명령은 soft_wrap이 걸린 `FIX:` 줄이 맡아야 한다(#91·#128·#149와 같은
     # 함정). 버전 두 개와 방향만 남기고, 명령은 후속으로 원인 분류에 붙인다.
-    raise ModelConfigError(
+    raise TransformersTorchMismatchError(
         f"설치된 transformers({transformers.__version__})가 이 torch({torch_version})를"
         " 인식하지 못합니다 — transformers가 요구하는 버전으로 torch를 올려야 합니다"
     )

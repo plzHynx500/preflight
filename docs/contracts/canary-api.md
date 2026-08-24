@@ -327,6 +327,7 @@ def suggest_fix(check_result: dict) -> dict | None:
 | 갈래 | 판정 순서 | cause |
 |---|---|---|
 | `import_crash` | `error_log`에 `bitsandbytes` 문자열이 있을 때만 bnb 문제로 본다. cuda라는 글자만으로는 아니다(#51) | `bnb_not_compiled_with_cuda` / `import_crash_general` |
+| `error` + `TransformersTorchMismatchError` | 설치된 transformers가 이 torch를 거절한 경우. **한국어 메시지가 아니라 예외 클래스 이름**으로 알아본다 — 문구를 다듬어도 분류가 안 깨진다(#175) | `transformers_rejects_torch` |
 | `device=cpu` 폴백 | ① `torch_cuda_version`(CPU 전용 빌드인가) → ② `gpu_free_mb`(NVML이 GPU를 봤는가) → ③ `bnb_compiled_with_cuda`(①②를 못 읽었을 때만) | `torch_cpu_only_build` / `torch_cpu_only_build_no_gpu` / `no_nvidia_gpu_or_driver` / `cuda_device_not_visible` / `bnb_not_compiled_with_cuda` / `4bit_cpu_fallback_other` |
 
 `env`의 속성을 **못 읽은 것**과 그 속성이 **아닌 것**은 다르다 — `torch_version`이 `None`인데 `torch_cuda_version`도 `None`인 것은 "CPU 전용 빌드"가 아니라 "수집 실패"다. 수집 실패를 원인으로 읽으면 멀쩡한 환경에 재설치를 권하게 된다.
