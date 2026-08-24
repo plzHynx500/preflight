@@ -114,6 +114,39 @@ result = run_canary(model, batch_size=target_batch_size, seq_len=target_seq_len)
 
 병렬 개발을 위한 모듈 경계다. 각 모듈이 주고받는 값의 정확한 스키마(함수 시그니처)는 [contracts/canary-api.md](contracts/canary-api.md)에 별도로 관리한다 — 이 절은 각 모듈의 책임 범위만 설명한다.
 
+### 프로세스 배치 — 어느 모듈이 어디서 도는가
+
+모듈을 가르는 첫 번째 축은 책임이 아니라 **프로세스**다. `import torch`가 `.so` 로드 실패로 프로세스를 통째로 죽일 수 있어, 그 위험을 자식 프로세스에 몰아넣는다([ADR-0002](adr/0002-subprocess-isolation-for-canary.md)).
+
+```
+┌─ 부모 프로세스 (preflight check) ─────────────────────────────┐
+│  cli.py                 Typer 진입점 · 아래를 순서대로 부른다   │
+│    ├─ gpu.py            query_gpu_state()    NVML만 쓴다      │
+│    ├─ canary/engine.py  run_canary_check() ──┐                │
+│    ├─ canary/judge.py   judge_result()       │                │
+│    ├─ fix/executor.py   suggest_fix() / apply_fix()           │
+│    ├─ reverify.py       reverify()           │                │
+│    └─ report.py         render_report()      │                │
+└──────────────────────────────────────────────┼────────────────┘
+                                               │ subprocess
+┌─ 자식 프로세스 (torch를 import하는 유일한 곳) ─▼───────────────┐
+│  canary/worker.py       실행·측정 본체                         │
+│    └─ canary/model.py   더미 모델·입력 구성                     │
+│                                                               │
+│  결과를 JSON 파일에 쓴다 → 부모가 읽는다                        │
+└───────────────────────────────────────────────────────────────┘
+```
+
+> **부모 쪽 모듈은 `torch`·`bitsandbytes`를 import하지 않는다.** 진단 대상이 바로 *"그 import가 죽는 환경"* 이라, 부모가 확인차 한 번이라도 import하면 CLI까지 함께 죽어 격리가 무너진다. 실제로 #24에서 `fix/executor.py`가 원인을 확인하려고 부모에서 `bitsandbytes`를 import해 이 사고가 났다. 부모는 자식이 읽어 `env`에 실어 보낸 값만 쓴다([contracts/canary-api.md의 `env` 절](contracts/canary-api.md) 참고). `gpu.py`는 예외가 아니라 애초에 `pynvml`만 쓴다.
+
+모듈끼리 직접 부르는 곳은 아래 세 갈래뿐이고, 나머지 호출은 전부 `cli.py`를 거친다.
+
+| 호출 | 이유 |
+|---|---|
+| `canary/worker.py` → `canary/model.py` | 자식 프로세스 안에서 더미 모델·입력을 구성한다 |
+| `fix/executor.py` → `fix/causes.py` | 해결 명령을 만들려면 원인 분류가 먼저다 |
+| `reverify.py` → `canary/engine.py`·`canary/judge.py`·`gpu.py` | 재확인은 GPU 상태 재조회부터 canary 실행·판정까지를 그대로 다시 도는 것이다 |
+
 ### CanaryEngine
 - **구현**: `src/preflight/canary/engine.py`(`run_canary_check`) · `worker.py`(subprocess 본체) · `model.py`(더미 모델/입력 구성) · `judge.py`(판정)
 - **입력**: 모델명 또는 HuggingFace config (가중치 다운로드 없음)
