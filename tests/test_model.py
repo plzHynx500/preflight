@@ -911,3 +911,88 @@ def test_config_error_message_leaves_unknown_failures_alone() -> None:
     from preflight.canary.model import _config_error_message
 
     assert _config_error_message("org/model", RuntimeError("무언가 다른 실패")) is None
+
+
+# --- transformers가 이 torch를 인식하지 못하는 조합 (#170) ---
+
+
+def _fake_transformers_utils(monkeypatch, *, torch_available: bool, version: str = "5.15.1"):
+    """`transformers` + `transformers.utils`를 최소한으로 흉내 낸다.
+
+    실물을 쓰면 이 환경의 조합에 결과가 좌우된다 — 판별 자체를 검증해야 하므로
+    `is_torch_available()`의 답만 고정한다.
+    """
+    fake_utils = types.SimpleNamespace(is_torch_available=lambda: torch_available)
+    fake_transformers = types.SimpleNamespace(__version__=version, utils=fake_utils)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.setitem(sys.modules, "transformers.utils", fake_utils)
+
+
+def test_build_dummy_model_reports_transformers_torch_mismatch(monkeypatch) -> None:
+    """torch가 transformers 요구 버전보다 낮으면 **오타가 아니라 버전 문제**라고 말한다 (#170).
+
+    transformers는 `is_torch_available()`이 False면 내부에서 `import torch`를 건너뛰는데
+    모듈 최상위는 `torch`를 그대로 참조해 `NameError`로 죽는다. 우리 폴백도 같은 이유로
+    죽어 `unknown_error`가 됐고, 화면에는 "모델명 오타 등"이 나갔다.
+
+    `pip check`가 통과시키는 조합이다 — transformers가 torch를 `extra`로만 선언해서
+    `pip install transformers`로는 검사되지 않는다.
+    """
+    from preflight.canary.model import ModelConfigError, build_dummy_model
+
+    _fake_transformers_utils(monkeypatch, torch_available=False)
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(__version__="2.2.1"))
+
+    with pytest.raises(ModelConfigError) as excinfo:
+        build_dummy_model("some-org/some-model", device="cpu")
+
+    message = str(excinfo.value)
+    # 두 버전이 다 들어가야 사용자가 무엇을 올려야 하는지 안다.
+    assert "5.15.1" in message
+    assert "2.2.1" in message or "torch" in message
+    assert "올려야" in message
+    # 판정 줄 본문에는 soft_wrap이 없어 rich가 개행을 끼워 넣는다 — 복사할 명령을
+    # 여기 넣으면 `pip install --upgrade` / `torch`로 쪼개진다(실측). 명령은
+    # soft_wrap이 걸린 FIX: 줄의 몫이다.
+    assert "pip install" not in message
+
+
+def test_build_dummy_model_proceeds_when_transformers_accepts_torch(
+    fake_transformers, fake_bitsandbytes, monkeypatch
+) -> None:
+    """정상 조합에서는 아무 영향이 없다 (#170).
+
+    `is_torch_available()`이 True면 검사는 조용히 통과하고 평소 경로로 간다.
+    """
+    from preflight.canary.model import build_dummy_model
+
+    real_transformers = sys.modules["transformers"]
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers.utils",
+        types.SimpleNamespace(is_torch_available=lambda: True),
+    )
+    monkeypatch.setattr(
+        real_transformers, "utils", sys.modules["transformers.utils"], raising=False
+    )
+
+    model, _config, _backend, _reason = build_dummy_model("some-org/some-model", device="cpu")
+
+    assert model is not None
+
+
+def test_build_dummy_model_does_not_claim_when_check_is_unavailable(
+    fake_transformers, fake_bitsandbytes, monkeypatch
+) -> None:
+    """판별 수단을 못 구하면 단정하지 않고 지금까지처럼 진행한다 (#170).
+
+    `is_torch_available`의 위치가 옮겨진 미래 버전에서 이 검사가 도구를 막아 세우면,
+    멀쩡한 환경이 진단조차 못 받는다 — 모르는 것을 아는 척하지 않는다는 원칙 그대로다.
+    """
+    from preflight.canary.model import build_dummy_model
+
+    monkeypatch.setitem(sys.modules, "transformers.utils", types.SimpleNamespace())
+
+    model, _config, _backend, _reason = build_dummy_model("some-org/some-model", device="cpu")
+
+    assert model is not None
