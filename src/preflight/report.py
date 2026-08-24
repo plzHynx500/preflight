@@ -649,7 +649,53 @@ def _build_lines(result: dict) -> list[_Line]:
     return lines
 
 
-def _render_fix_block(console: Console, result: dict) -> None:
+#: `--batch-size`·`--seq-len`을 안 주면 CLI가 채우는 값(cli.md "결과 집계").
+#: 재확인 안내에서 이 값과 같으면 생략한다 — 붙이든 안 붙이든 같은 명령이라
+#: 안 주고 실행한 사람에게 안 준 인자를 되돌려주지 않는다.
+_DEFAULT_BATCH_SIZE = 1
+_DEFAULT_SEQ_LEN = 8
+
+
+def _quote_arg(value: str) -> str:
+    """화면에 찍는 명령 인자의 최소 인용 (fix/executor.py의 형제 함수와 같은 규칙).
+
+    공백이 있으면 큰따옴표로 감싼다. 셸에 그대로 넘기는 값이 아니라 **사람이 보고
+    복사할 문자열**이라 완전한 셸 이스케이프까지는 하지 않는다.
+    """
+    cleaned = " ".join(value.split())
+    return f'"{cleaned}"' if (not cleaned or " " in cleaned) else cleaned
+
+
+def _recheck_command(results: list[dict]) -> str:
+    """`재확인:` 안내에 넣을 명령 (#160).
+
+    예전에는 `preflight check --yes`를 그대로 찍었다. `--model`을 준 사용자가 그대로
+    따르면 **모델 체크가 통째로 사라지고** batch=1·seq=8 고정의 기본 체크만 돈다 —
+    사용자는 자기 설정으로 재확인했다고 믿는데 실제로는 다른 것을 잰 것이다.
+    `--model`을 쓴 사람일수록 재확인이 필요한데 그 사람이 정확히 이 함정에 빠졌다.
+
+    조건은 `results`에서 그대로 읽는다. CLI가 얹어 보낸 값이라(cli.md "리포트 입력
+    스키마") 별도 배선 없이 **화면에 나온 그 진단의 조건**을 담을 수 있다.
+
+    기본값과 같은 `--batch-size`·`--seq-len`은 생략한다. 붙이든 안 붙이든 같은
+    명령이고, 안 준 사람에게 안 준 인자를 되돌려줄 이유가 없다.
+    """
+    source = next((r for r in results if r.get("model_name")), None)
+    if source is None:
+        return "preflight check --yes"
+
+    parts = ["preflight check", "--model", _quote_arg(str(source["model_name"]))]
+    batch_size = source.get("batch_size")
+    if batch_size is not None and batch_size != _DEFAULT_BATCH_SIZE:
+        parts += ["--batch-size", str(batch_size)]
+    seq_len = source.get("seq_len")
+    if seq_len is not None and seq_len != _DEFAULT_SEQ_LEN:
+        parts += ["--seq-len", str(seq_len)]
+    parts.append("--yes")
+    return " ".join(parts)
+
+
+def _render_fix_block(console: Console, result: dict, recheck_command: str) -> None:
     fix = result.get("fix")
     if not fix:
         return
@@ -665,7 +711,9 @@ def _render_fix_block(console: Console, result: dict) -> None:
             # check --yes"를 다시 그리면, 그대로 따른 사용자는 같은 설치를 100초
             # 넘게 들여 반복하고 똑같은 화면을 본다(#88, 상영님 실측). 수정이
             # 듣지 않았다는 사실은 바로 위 "수정 전 → 수정 후" 줄이 말해준다.
-            console.print("재확인: preflight check --yes")
+            # model_name은 사용자 입력이라 대괄호가 rich 마크업으로 먹힐 수 있고(#67),
+            # 명령이 길어지면 문자열에 개행이 끼어 복사가 깨진다(#91·#128·#149).
+            console.print(f"재확인: {escape(recheck_command)}", soft_wrap=True)
     else:
         message = fix.get("message", "")
         # 위 FIX: 줄과 같은 이유로 soft_wrap이 필요하다. `fix_command`가 없는
@@ -741,7 +789,7 @@ def _render_text(results: list[dict], elapsed_seconds: float | None, notices: li
     for result in results:
         if result.get("verdict") != "PASS" and result.get("fix"):
             console.print()
-            _render_fix_block(console, result)
+            _render_fix_block(console, result, _recheck_command(results))
 
     # --yes가 무엇을 했는지(또는 왜 아무것도 안 했는지)를 알리는 줄이다. FIX 블록
     # 다음, 요약 줄 앞에 온다 — "무엇이 문제인가 → 무엇을 해야 하는가 → 도구가

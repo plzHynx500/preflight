@@ -16,6 +16,8 @@ Preflight 명령어의 입출력 형식. CLI를 감싸는 도구(CI 스크립트
 
 **`--batch-size`·`--seq-len`은 모델 체크 전용이다.** `--model` 없이 주면 명령 실행 초입에서 즉시 거부한다(`Invalid value for '--batch-size': --batch-size은 --model 없이 쓸 수 없다 (모델 체크 전용) — --model과 함께 쓰거나 --batch-size를 빼세요.`, 종료 코드 2) — canary를 실행하기 전이라 결과 항목이 아예 생기지 않는다(#150). 이 둘 중 하나라도 주면서 `--model`을 안 준 경우가 대상이며, 어느 쪽을 줬는지에 따라 메시지의 옵션 이름이 바뀐다. `--model`과 함께 주면 지금처럼 모델 체크의 배치 크기·시퀀스 길이로 쓰이고, 기본 체크는 아래 "결과 집계"대로 여전히 고정 크기로 돈다.
 
+**`재확인:` 안내는 그 진단을 만든 조건을 그대로 담는다.** `--model`을 준 실행이면 모델명과 (기본값과 다른) `--batch-size`·`--seq-len`이 함께 실린다 — 안내를 그대로 따랐을 때 **같은 것을 다시 재야** 하기 때문이다(#160). 기본값과 같은 값은 생략한다(붙이든 안 붙이든 같은 명령이다). `--model` 없이 실행했으면 `preflight check --yes`로 나온다.
+
 **`--batch-size`·`--seq-len`은 1 이상의 정수만 허용한다.** 0·음수를 주면 Typer가 파싱 단계에서 즉시 거부한다(`Invalid value for '--batch-size': 0 is not in the range x>=1.`, 종료 코드 2) — canary를 실행하기 전이라 결과 항목이 아예 생기지 않는다(#59).
 
 **`--model`에 빈 문자열(`""`)을 주면 Typer가 파싱 단계에서 즉시 거부한다**(`Invalid value for '--model': ...`, 종료 코드 2). 빈 문자열은 파이썬에서 falsy라 미지정(`None`)과 구분 없이 처리되면 모델 체크 자체가 조용히 사라진다 — CI에서 `--model "$MODEL"`의 변수가 비어 있을 때 특히 위험하다(#126). `--model`을 아예 안 주면(`None`) 지금까지와 동일하게 기본 체크만 실행된다. 공백만 있는 문자열(`"   "`)은 이 검증 대상이 아니다 — "주어진 값"으로 그대로 모델 체크가 시도된다.
@@ -169,7 +171,7 @@ $ preflight check --model meta-llama/Llama-3.1-8B --batch-size 2 --seq-len 2048
 — 환경 체크 실패로 생략
 
 FIX: /home/user/venv/bin/python -m pip install bitsandbytes --upgrade --force-reinstall
-재확인: preflight check --yes
+재확인: preflight check --model meta-llama/Llama-3.1-8B --batch-size 2 --seq-len 2048 --yes
 
 3개 항목 확인 · 1개 문제 발견 · 소요 시간 5초
 ```
