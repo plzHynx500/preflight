@@ -178,11 +178,24 @@ def test_basic_check_runs_on_gpu() -> None:
 
 @pytest.fixture
 def fake_module(tmp_path, monkeypatch):
-    """자식 프로세스가 import할 가짜 모듈을 심는다 (PYTHONPATH 앞에 붙인다)."""
+    """자식 프로세스가 import할 가짜 모듈을 심는다 (PYTHONPATH **앞에** 붙인다).
+
+    `prepend`가 핵심이다. 예전에는 `PYTHONPATH`를 통째로 덮어써서 `src/`가 날아갔고,
+    그러면 자식이 **작업 트리가 아니라 이미 설치돼 있는 preflight**를 import한다 —
+    소스를 고쳐도 이 테스트들은 옛 코드를 검증하는 상태가 된다.
+
+    실제로 `preflight-gpu`를 설치해둔 기계에서 `env`에 필드를 추가했더니, 자식이
+    돌려준 `env`에 그 필드가 없어 테스트가 깨졌다(#163). 설치본이 없는 CI에서는
+    우연히 통과해서 로컬에서만, 그것도 설치본이 있는 사람에게만 보인다 — #124
+    리뷰에서 "무관한 기존 실패"로 넘어간 것이 이것이었다.
+
+    `#134`에서 픽스처가 빠져 테스트가 다른 경로를 타는 바람에 P0을 놓쳤던 것과
+    같은 부류다: **초록인데 아무것도 지키지 않는 상태.** 되돌리지 말 것.
+    """
 
     def _install(name: str, source: str) -> None:
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
-        monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path), prepend=os.pathsep)
 
     return _install
 
