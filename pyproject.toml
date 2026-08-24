@@ -60,6 +60,10 @@ dependencies = [
 Homepage = "https://github.com/plzHynx500/preflight"
 Repository = "https://github.com/plzHynx500/preflight"
 Issues = "https://github.com/plzHynx500/preflight/issues"
+# 배포본 페이지. 실행 명령(`preflight`)과 패키지 이름(`preflight-gpu`)이 달라서
+# 사용자가 어느 쪽이 맞는지 확인할 자리가 필요하다 — PyPI에는 이름이 겹치는
+# 무관한 패키지가 따로 있다(#167 리뷰).
+PyPI = "https://pypi.org/project/preflight-gpu/"
 
 [project.optional-dependencies]
 dev = [

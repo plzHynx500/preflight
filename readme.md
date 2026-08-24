@@ -56,6 +56,8 @@ canary는 **별도 프로세스에서** 돕니다. 진단이 필요한 상황이
 
 기준을 바꾸는 옵션(`--quantization`, `--optimizer` 등)은 아직 없습니다. 다음 버전에서 다룰 예정입니다.
 
+**진단하는 것은 환경입니다.** 드라이버·CUDA·torch 빌드·라이브러리 설치·VRAM까지가 대상이고, **학습 코드 자체의 오류나 라이브러리 API 변경은 잡지 않습니다.** preflight를 통과했는데 `TypeError: SFTConfig.__init__() got an unexpected keyword argument` 같은 것으로 죽는다면, 그건 환경이 아니라 코드 쪽 문제입니다.
+
 ---
 
 ## 무엇을 하나
@@ -82,7 +84,11 @@ pip install preflight-gpu
 python -m preflight check
 ```
 
-> **주의** — PyPI에 이름이 비슷한 다른 패키지 `preflight`(웹사이트 배포 점검 도구)가 있고, 그쪽도 `preflight`라는 콘솔 명령을 설치합니다. 둘을 같은 환경에 설치하면 나중에 설치한 쪽이 명령을 덮어씁니다. 이 도구의 패키지 이름은 **`preflight-gpu`** 입니다.
+> ⚠️ **패키지 이름은 `preflight-gpu`입니다. 실행 명령만 `preflight`입니다.**
+>
+> PyPI의 `preflight`는 **무관한 다른 패키지**(웹사이트 배포 점검 도구, BSD)입니다. `pip install preflight`는 **에러 없이 성공하고** 그 도구가 깔립니다 — 그쪽도 `preflight`라는 콘솔 명령을 설치하기 때문에, 같은 환경에 둘 다 있으면 나중에 설치한 쪽이 명령을 덮어씁니다.
+>
+> 헷갈릴 때는 [pypi.org/project/preflight-gpu](https://pypi.org/project/preflight-gpu/)에서 확인하세요.
 
 ---
 
@@ -156,6 +162,7 @@ CI 파이프라인이나 스크립트에서 결과를 분기할 수 있도록 �
 | 지원 플랫폼 | Linux, Windows (네이티브) · NVIDIA GPU 필요 |
 | Python | 3.9 이상 |
 | 설치 | `pip install preflight-gpu` (실행 명령은 `preflight`) |
+| PyPI | [pypi.org/project/preflight-gpu](https://pypi.org/project/preflight-gpu/) |
 | 실행 | `preflight check` — 명령을 못 찾으면 `python -m preflight check` |
 | 종료 코드 | 0 = PASS · 1 = FAIL · 2 = WARN |
 
