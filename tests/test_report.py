@@ -1544,3 +1544,93 @@ def test_render_report_fallback_reason_is_capped(capsys) -> None:
     assert "RuntimeError" in out
     assert reason not in out
     assert "…" in out
+
+
+# --- 재확인 안내가 조건을 잃지 않는다 (#160) ---
+
+
+def _fix_result(**extra):
+    raw = {**_OK_RAW, "device": "cpu"}
+    return {
+        **judge_result(raw),
+        "fix": {"cause": "x", "message": "m", "fix_command": "pip install bitsandbytes"},
+        **extra,
+    }
+
+
+def test_recheck_hint_keeps_model_and_sizes(capsys) -> None:
+    """`재확인:` 안내가 사용자가 실제로 준 조건을 담는다 (#160).
+
+    예전에는 `preflight check --yes`를 그대로 찍어서, `--model`을 준 사용자가 그대로
+    따르면 모델 체크가 통째로 사라지고 기본 체크만 돌았다. 자기 설정으로 재확인했다고
+    믿는데 실제로는 다른 것을 잰 것이다.
+    """
+    basic = _fix_result()
+    model = {
+        **judge_result(_MODEL_MODE_RAW),
+        "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
+        "batch_size": 2,
+        "seq_len": 512,
+    }
+
+    render_report([basic, model])
+
+    out = capsys.readouterr().out
+    assert (
+        "재확인: preflight check --model Qwen/Qwen2.5-0.5B-Instruct"
+        " --batch-size 2 --seq-len 512 --yes" in out
+    )
+
+
+def test_recheck_hint_stays_bare_without_model(capsys) -> None:
+    """`--model`을 안 준 실행에서는 지금처럼 짧게 나온다 (#160)."""
+    render_report([_fix_result()])
+
+    assert "재확인: preflight check --yes" in capsys.readouterr().out
+
+
+def test_recheck_hint_omits_default_sizes(capsys) -> None:
+    """기본값과 같은 배치·길이는 붙이지 않는다 (#160).
+
+    붙이든 안 붙이든 같은 명령이다. 안 준 사람에게 안 준 인자를 되돌려줄 이유가 없다.
+    """
+    model = {
+        **judge_result(_MODEL_MODE_RAW),
+        "model_name": "org/model",
+        "batch_size": 1,
+        "seq_len": 8,
+    }
+
+    render_report([_fix_result(), model])
+
+    out = capsys.readouterr().out
+    assert "재확인: preflight check --model org/model --yes" in out
+    assert "--batch-size" not in out.split("재확인:")[1]
+
+
+def test_recheck_hint_quotes_names_with_spaces(capsys) -> None:
+    """공백이 든 이름은 인용해서 셸에서 두 인자로 갈라지지 않게 한다 (#160)."""
+    model = {
+        **judge_result(_MODEL_MODE_RAW),
+        "model_name": "C:/my models/ckpt",
+        "batch_size": 1,
+        "seq_len": 8,
+    }
+
+    render_report([_fix_result(), model])
+
+    assert '--model "C:/my models/ckpt"' in capsys.readouterr().out
+
+
+def test_recheck_hint_survives_bracket_in_model_name(capsys) -> None:
+    """대괄호가 든 이름이 rich 마크업으로 먹히지 않는다 (#67과 같은 이유)."""
+    model = {
+        **judge_result(_MODEL_MODE_RAW),
+        "model_name": "org/ckpt[v2]",
+        "batch_size": 1,
+        "seq_len": 8,
+    }
+
+    render_report([_fix_result(), model])
+
+    assert "org/ckpt[v2]" in capsys.readouterr().out
