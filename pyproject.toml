@@ -17,13 +17,20 @@ keywords = ["fine-tuning", "qlora", "lora", "cuda", "gpu", "diagnostics", "bitsa
 # 파이썬 버전은 requires-python(">=3.9")·CI 매트릭스(3.9·3.12)와 어긋나면 안 된다.
 # 3.13은 CI가 돌리지 않으므로 **적지 않는다** — 검증하지 않은 것을 지원한다고 적으면
 # 그 자체가 잘못된 진단 정보다(이 도구가 고치려는 문제와 같은 부류다).
+#
+# OS도 같은 기준이다. 처음에는 "OS Independent"로 적었는데, 그건 사실이 아니다 —
+# 의존성이 순수 파이썬뿐이라 macOS에서 설치는 되지만 이 도구는 NVIDIA/CUDA 경로만
+# 진단한다(NFR-01: Linux·Windows 네이티브, FR-11: macOS는 이번 범위 밖). CI도
+# ubuntu·windows만 돌린다. 설치되는 것과 쓸 수 있는 것을 같다고 적으면, PyPI 검색으로
+# 찾아온 macOS 사용자가 설치한 뒤에야 쓸 수 없다는 걸 알게 된다(#167).
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: GPU :: NVIDIA CUDA",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
@@ -53,6 +60,10 @@ dependencies = [
 Homepage = "https://github.com/plzHynx500/preflight"
 Repository = "https://github.com/plzHynx500/preflight"
 Issues = "https://github.com/plzHynx500/preflight/issues"
+# 배포본 페이지. 실행 명령(`preflight`)과 패키지 이름(`preflight-gpu`)이 달라서
+# 사용자가 어느 쪽이 맞는지 확인할 자리가 필요하다 — PyPI에는 이름이 겹치는
+# 무관한 패키지가 따로 있다(#167 리뷰).
+PyPI = "https://pypi.org/project/preflight-gpu/"
 
 [project.optional-dependencies]
 dev = [
