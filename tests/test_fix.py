@@ -445,8 +445,9 @@ def test_classify_cpu_only_torch_build_without_nvidia_gpu() -> None:
     """#55의 QA 환경(CPU 전용 torch + NVIDIA GPU 없음) — 원인은 CPU 빌드,
     다만 GPU가 없으니 CUDA torch를 자동으로 받아봐야 달라지는 게 없다.
 
-    안내 문구에는 재설치 명령이 남아 "GPU 기계라면 이걸 하면 된다"를 알려주되,
-    `--yes`의 자동 실행 대상에서는 뺀다.
+    안내 문구는 "GPU 기계라면 드라이버부터 확인하라"까지만 말하고 **특정 CUDA 휠
+    태그는 찍지 않는다**(#168) — GPU가 안 보이면 드라이버 버전도 없어 고를 근거가
+    없다. `--yes`의 자동 실행 대상에서도 뺀다.
     """
     res = _cpu_fallback(
         {
@@ -461,7 +462,12 @@ def test_classify_cpu_only_torch_build_without_nvidia_gpu() -> None:
     fix = suggest_fix(res)
     assert fix is not None
     assert "CPU 전용 빌드" in fix["message"]
-    assert "torch" in fix["message"] and "재설치" in fix["message"]
+    # 특정 CUDA 휠 태그를 찍지 않는다 — GPU가 안 보이면 드라이버 버전도 없어서
+    # 태그를 고를 근거가 없다. 근거 없이 찍으면 추측이 된다(#168). 형제 원인
+    # `torch_not_installed_no_gpu`와 같은 자리로 보낸다.
+    assert "torch" in fix["message"]
+    assert "pytorch.org/get-started/locally" in fix["message"]
+    assert "/whl/cu" not in fix["message"]
     assert fix["fix_command"] is None
     assert "메모리 부족" not in fix["message"]
 
