@@ -88,6 +88,7 @@ def build_dummy_model(model_name: str, device: str = "cuda"):
     4bit 가중치는 uint8로 packed되어 `numel()` 기준 파라미터 수가 실제의 절반으로
     보인다 — 리포트에 파라미터 수를 찍을 일이 있으면 `config`에서 계산해야 한다.
     """
+    _require_transformers_accepts_torch()
     config = _load_config(model_name)
     model, quant_backend, fallback_reason = _build_qlora_model(config, device)
     return model, config, quant_backend, fallback_reason
@@ -99,6 +100,54 @@ class ModelConfigError(RuntimeError):
     worker가 이 예외를 traceback으로 포장해 `error_log`에 담고, 리포트가 그 꼬리를
     화면에 보여준다 — 그래서 메시지 자체가 사용자에게 그대로 읽힌다(#62).
     """
+
+
+def _require_transformers_accepts_torch() -> None:
+    """설치된 transformers가 이 torch를 인식하는지 먼저 확인한다 (#170).
+
+    transformers는 `is_torch_available()`이 False면 내부에서 `import torch`를 건너뛰는데,
+    모듈 최상위 코드는 `torch`를 그대로 참조한다. 그래서 **모델 구성 중에
+    `NameError: name 'torch' is not defined`로 죽고**, 우리 폴백도 같은 이유로 죽어
+    `unknown_error`가 됐다 — 화면에는 "모델명 오타 등"이 나갔다. 오타가 아니다.
+
+    **`pip check`가 이 조합을 통과시킨다.** transformers는 torch를
+    `torch>=2.5; extra == "torch"`로 선언하는데, `extra`는 요청하지 않으면 검사되지
+    않는다. `pip install transformers`만 하면 pip 입장에서는 정상이다 — 표준 도구가
+    "이상 없음"이라고 말하는 조합에서 실제로는 깨지는, 이 도구가 잡아야 할 종류다.
+
+    **버전 표를 만들지 않는다.** `is_torch_available()`은 transformers 자신이 내놓는
+    답이라, 어떤 조합이 되는지 우리가 알 필요가 없다(#113·#114의 "표가 아니라 실측").
+
+    판별 수단 자체를 못 구하면(함수 위치가 옮겨진 미래 버전 등) **단정하지 않고**
+    지금까지처럼 진행한다 — 모르는 것을 아는 척하지 않는다.
+    """
+    try:
+        import transformers
+        from transformers.utils import is_torch_available
+    except Exception:  # noqa: BLE001
+        # transformers가 아예 없으면 `transformers_not_installed`로 분류되는 게 맞다
+        # (#92). 여기서 가로채면 그 분류를 덮어쓴다.
+        return
+
+    if is_torch_available():
+        return
+
+    try:
+        import torch
+
+        torch_version = torch.__version__
+    except Exception:  # noqa: BLE001
+        torch_version = "확인 불가"
+
+    # **여기에 pip 명령을 넣지 않는다.** 이 문자열은 판정 줄의 본문(`line.text`)이 되는데
+    # 그 경로에는 soft_wrap이 없어서 rich가 폭에 맞춰 **문자열 자체에 개행을 끼워
+    # 넣는다** — 실측으로 `pip install --upgrade` / `torch`로 쪼개지는 것을 확인했다.
+    # 복사할 명령은 soft_wrap이 걸린 `FIX:` 줄이 맡아야 한다(#91·#128·#149와 같은
+    # 함정). 버전 두 개와 방향만 남기고, 명령은 후속으로 원인 분류에 붙인다.
+    raise ModelConfigError(
+        f"설치된 transformers({transformers.__version__})가 이 torch({torch_version})를"
+        " 인식하지 못합니다 — transformers가 요구하는 버전으로 torch를 올려야 합니다"
+    )
 
 
 def _load_config(model_name: str):
