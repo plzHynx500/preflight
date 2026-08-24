@@ -7,10 +7,12 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
+from preflight.canary.model import TransformersTorchMismatchError
 from preflight.canary.worker import _PREWRITE_IMPORT_NOTE
 from preflight.cli import app
-from preflight.fix.causes import classify_cause
+from preflight.fix.causes import _TRANSFORMERS_TORCH_MISMATCH, classify_cause
 from preflight.fix.executor import FixExecutionError, apply_fix, suggest_fix
+from preflight.report import _KNOWN_ERROR_CLASSES
 
 BNB_REINSTALL_ARGS = ["-m", "pip", "install", "bitsandbytes", "--upgrade", "--force-reinstall"]
 
@@ -991,10 +993,12 @@ def test_seq_len_cause_needs_the_kernel_assert_signature() -> None:
 
 # --- transformers가 이 torch를 거절한 경우 (#175) ---
 
+#: 실제 클래스 이름에서 조립한다 — 문자열로 복사해두면 rename 후에도 이 테스트가
+#: 그대로 통과해서 회귀를 못 잡는다(#115에서 세운 원칙, PR #178 리뷰).
 _MISMATCH_LOG = (
     "Traceback (most recent call last):\n"
     '  File "model.py", line 1, in build_dummy_model\n'
-    "preflight.canary.model.TransformersTorchMismatchError: 설치된 transformers(5.15.1)가"
+    f"preflight.canary.model.{TransformersTorchMismatchError.__name__}: 설치된 transformers(5.15.1)가"
     " 이 torch(2.2.1)를 인식하지 못합니다\n"
 )
 
@@ -1007,6 +1011,27 @@ def _mismatch_result(env: dict) -> dict:
         "error_log": _MISMATCH_LOG,
         "env": env,
     }
+
+
+def test_cause_signature_matches_the_real_exception_class() -> None:
+    """분류·표제가 보는 이름이 **실제 클래스 이름**과 같아야 한다 (PR #178 리뷰).
+
+    이름이 네 곳에 있고 셋은 문자열 복사본이다 — `causes.py`의 매칭 상수,
+    `report.py`의 `_KNOWN_ERROR_CLASSES`, 그리고 이 파일의 로그 픽스처. 복사본을
+    그대로 두면 **클래스를 rename 했을 때 분류도 표제도 죽는데 테스트는 전부
+    통과한다**(상영님이 실제로 rename해 339 passed를 확인).
+
+    `causes.py`·`report.py`가 문자열을 쓰는 것 자체는 맞다 — 부모가 `canary.model`을
+    import하면 의존 방향이 뒤집힌다(ADR-0002). 그래서 그 결합을 **테스트가 대신
+    고정한다.**
+
+    #115의 `test_prewritten_import_crash_does_not_name_a_library`가 세운 원칙과
+    같다: "문구를 그대로 참조한다(복사하지 않는다)".
+    """
+    name = TransformersTorchMismatchError.__name__
+
+    assert _TRANSFORMERS_TORCH_MISMATCH == name
+    assert name in _KNOWN_ERROR_CLASSES
 
 
 def test_transformers_rejects_torch_is_classified() -> None:
