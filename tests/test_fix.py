@@ -987,3 +987,82 @@ def test_seq_len_cause_needs_the_kernel_assert_signature() -> None:
     )
 
     assert classify_cause(result) == "unknown_error"
+
+
+# --- transformers가 이 torch를 거절한 경우 (#175) ---
+
+_MISMATCH_LOG = (
+    "Traceback (most recent call last):\n"
+    '  File "model.py", line 1, in build_dummy_model\n'
+    "preflight.canary.model.TransformersTorchMismatchError: 설치된 transformers(5.15.1)가"
+    " 이 torch(2.2.1)를 인식하지 못합니다\n"
+)
+
+
+def _mismatch_result(env: dict) -> dict:
+    return {
+        "status": "error",
+        "verdict": "FAIL",
+        "reasons": ["status_error"],
+        "error_log": _MISMATCH_LOG,
+        "env": env,
+    }
+
+
+def test_transformers_rejects_torch_is_classified() -> None:
+    """둘 다 설치돼 있는데 서로 안 맞는 경우를 unknown_error로 흘리지 않는다 (#175).
+
+    `_classify_missing_library`는 "없는" 것만 잡는다 — 여기는 **둘 다 있는데 서로
+    거절하는** 상태라 그 분류로는 안 걸리고 예전에는 unknown_error가 됐다.
+
+    한국어 메시지가 아니라 **예외 클래스 이름**으로 알아본다. 문구를 다듬어도
+    분류가 안 깨지게 하기 위해서다.
+    """
+    env = {"torch_installed": True, "transformers_installed": True}
+
+    assert classify_cause(_mismatch_result(env)) == "transformers_rejects_torch"
+
+
+def test_transformers_rejects_torch_uses_driver_aware_wheel() -> None:
+    """GPU가 보이면 드라이버에 맞는 CUDA 휠로 재설치를 제안한다 (#175).
+
+    **맨몸 `pip install --upgrade torch`를 쓰지 않는다.** Windows의 기본 PyPI 휠은
+    CPU 전용이라 버전만 올라가고 GPU를 못 쓰는 더 나쁜 상태가 된다 —
+    `torch_cpu_only_build`가 잡는 바로 그 상태다(#55).
+    """
+    env = {
+        "torch_installed": True,
+        "transformers_installed": True,
+        "gpu_free_mb": 9000.0,
+        "gpu_driver_version": "580.1",
+        "gpu_name": "NVIDIA GeForce RTX 4070 Ti",
+    }
+
+    fix = suggest_fix(_mismatch_result(env))
+
+    assert fix["cause"] == "transformers_rejects_torch"
+    assert "--index-url" in fix["fix_command"]
+    assert "download.pytorch.org/whl/cu" in fix["fix_command"]
+    assert "--upgrade torch" not in fix["fix_command"]
+
+
+def test_transformers_rejects_torch_without_gpu_gives_no_command() -> None:
+    """GPU가 안 보이면 자동 설치를 걸지 않고 안내만 한다 (#175).
+
+    2GB짜리 CUDA 빌드를 받아봐야 달라지는 게 없다 —
+    `torch_cpu_only_build_no_gpu`와 같은 판단이다.
+    """
+    env = {"torch_installed": True, "transformers_installed": True}
+
+    fix = suggest_fix(_mismatch_result(env))
+
+    assert fix["fix_command"] is None
+    assert fix["fix_argv"] is None
+    assert "pytorch.org" in fix["message"]
+
+
+def test_transformers_not_installed_still_wins() -> None:
+    """transformers가 아예 없으면 그쪽 분류가 유지된다 (#92 회귀 방지)."""
+    env = {"torch_installed": True, "transformers_installed": False}
+
+    assert classify_cause(_mismatch_result(env)) == "transformers_not_installed"

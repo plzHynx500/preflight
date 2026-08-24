@@ -50,7 +50,9 @@ _MISSING_STACK_MESSAGES: dict[str, tuple[str, str]] = {
 # 원인을 확정할 수 있는 config 조회 실패에만 ModelConfigError를 쓴다(#62) — 여기서는
 # 그 사실을 재확인하지 않고 클래스 이름만 본다(huggingface_hub 판별과 같은 이유로
 # 이름 비교가 모듈 경로 이동에 더 안정적이다).
-_KNOWN_ERROR_CLASSES = {"ModelConfigError"}
+#: 하위 클래스는 이름이 달라 따로 적어야 한다 — `_known_error_headline`이
+#: 트레이스백 마지막 줄의 **이름**을 보기 때문이다.
+_KNOWN_ERROR_CLASSES = {"ModelConfigError", "TransformersTorchMismatchError"}
 
 # --model 모드 전용 폴백 문구 (_quant_fallback_line 참고).
 _MODEL_MODE_QUANT_FALLBACK_MESSAGE = (

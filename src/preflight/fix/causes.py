@@ -21,6 +21,11 @@ _BNB_IMPORT_SIGNATURE = "bitsandbytes"
 _DEVICE_ASSERT_SIGNATURE = "device-side assert"
 
 
+#: `canary/model.py`가 이 경우에만 던지는 예외의 클래스 이름. 한국어 메시지가 아니라
+#: **식별자**를 보는 이유는 문구를 다듬어도 분류가 안 깨지게 하기 위해서다(#175).
+_TRANSFORMERS_TORCH_MISMATCH = "TransformersTorchMismatchError"
+
+
 def classify_cause(check_result: dict) -> str:
     """Canary check_result 딕셔너리에서 가장 중요한 대표 원인(cause code)을 분류한다.
 
@@ -71,6 +76,10 @@ def classify_cause(check_result: dict) -> str:
         missing = _classify_missing_library(check_result.get("env") or {})
         if missing:
             return missing
+        # transformers가 이 torch를 거절한 경우(#170). 라이브러리가 "없는" 것이
+        # 아니라 **둘 다 있는데 서로 안 맞는** 것이라 위 분류로는 안 잡힌다.
+        if _TRANSFORMERS_TORCH_MISMATCH in error_log:
+            return "transformers_rejects_torch"
         return "unknown_error"
 
     # 6. WARN 항목
