@@ -5,8 +5,10 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from preflight import __version__
@@ -50,6 +52,31 @@ def _strip_ansi(text: str) -> str:
 def test_check_command_exists() -> None:
     result = runner.invoke(app, ["check", "--help"])
     assert result.exit_code == 0
+
+
+def test_version_matches_pyproject() -> None:
+    """`__version__`이 `pyproject.toml`의 `version`과 같아야 한다 (#183).
+
+    버전이 두 곳에 복사돼 있다. 0.1.0에서는 두 값이 우연히 같아 안 드러났는데,
+    0.1.1을 찍으면서 `pyproject`만 올렸더니 **패키지는 0.1.1인데 `--version`은
+    0.1.0을 출력**했다.
+
+    진단 도구가 자기 버전을 틀리게 말하면 "이 수정이 들어간 버전인가"를 판단할
+    근거가 사라지고, 이슈 제보도 어긋난다. 아래 `test_version_flag_prints_version_
+    and_exits`는 `__version__`을 **자기 자신과** 비교해서 이 어긋남을 못 잡는다 —
+    그래서 pyproject를 직접 읽어 대조한다.
+
+    #178에서 "이름이 복사돼 있는데 아무 테스트도 고정하지 않는다"로 잡은 것과 같은
+    부류다.
+    """
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    if not pyproject.exists():
+        pytest.skip("소스 트리가 아닌 환경 — 대조할 pyproject.toml이 없다")
+
+    match = re.search(r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
+
+    assert match is not None, "pyproject.toml에서 version을 못 찾았다"
+    assert __version__ == match.group(1)
 
 
 def test_version_flag_prints_version_and_exits() -> None:
